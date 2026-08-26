@@ -8,6 +8,8 @@
 <title>Diamond Chart — Card Baseball</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Teko:wght@500;600;700&family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@500;700&display=swap" rel="stylesheet">
+<!-- Supabase JS client — jsdelivr is Supabase's own officially recommended CDN for this library. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   :root{
     color-scheme: light;
@@ -108,6 +110,8 @@
   .draftrow .dpts{font-family:'Roboto Mono'; font-size:13px; color:var(--amber); font-weight:700; flex-shrink:0;}
   .btn{background:var(--red); color:#fff; border:none; border-radius:8px; padding:12px 22px; font-weight:700; font-size:15px; font-family:'Inter'; cursor:pointer;}
   .btn:disabled{opacity:0.35;}
+  .textinput{display:block; width:100%; max-width:280px; box-sizing:border-box; background:var(--card); border:1.5px solid var(--line); border-radius:8px; padding:12px 14px; font-size:15px; font-family:'Inter'; color:var(--chalk); margin-bottom:10px;}
+  .textinput:focus{outline:none; border-color:var(--blue);}
   .btn.secondary{background:var(--card); border:1.5px solid var(--blue); color:var(--blue);}
   .draftbanner .btn.secondary{background:rgba(255,255,255,0.10); border:1.5px solid rgba(255,255,255,0.6); color:#fff;}
   .draftbanner .btn.secondary:active{background:rgba(255,255,255,0.22);}
@@ -311,6 +315,119 @@
    omitted per project scope. Simplifications from the full rulebook
    are marked with [SIMPLIFIED].
    ================================================================== */
+
+/* ==================================================================
+   ONLINE MULTIPLAYER — Supabase backend
+   ==================================================================
+   Fill in your project's URL and anon/public key below (Supabase
+   dashboard: Settings > API). The anon key is meant to be public —
+   it's safe to ship in client code; access is controlled by the RLS
+   policies in the schema file, not by keeping this key secret.
+   Everything online-related degrades gracefully if this isn't
+   configured yet: the app still works fully offline exactly as
+   before, just without login/sync/live-play options showing up.
+   ================================================================== */
+const SUPABASE_CONFIG = {
+  url: 'https://sadhhtzuncfjhtaupbxm.supabase.co',
+  anonKey: 'sb_publishable_WT8cww_6Wb_aq2OibNgeGw_yVoG4yoh',
+};
+let SUPA = null; // the actual Supabase client, or null if not configured / failed to load
+function isSupabaseConfigured(){
+  return SUPABASE_CONFIG.url && SUPABASE_CONFIG.url!=='YOUR_SUPABASE_PROJECT_URL'
+    && SUPABASE_CONFIG.anonKey && SUPABASE_CONFIG.anonKey!=='YOUR_SUPABASE_ANON_KEY';
+}
+function initSupabase(){
+  if(!isSupabaseConfigured()) return null;
+  try{
+    // The CDN script exposes a global `supabase` namespace with .createClient — renaming our own
+    // client instance to SUPA avoids shadowing that global.
+    if(typeof supabase==='undefined' || !supabase.createClient) return null;
+    return supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
+  } catch(e){ console.error('Supabase init failed:', e); return null; }
+}
+
+/* ---------------- Identity: name + 4-digit PIN, remembered locally ---------------- */
+const CURRENT_PLAYER_KEY = 'diamondchart:currentPlayer';
+let CURRENT_PLAYER = null; // {id, name} once logged in, else null
+function loadStoredPlayer(){
+  try{
+    const raw = localStorage.getItem(CURRENT_PLAYER_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch(e){ return null; }
+}
+function saveStoredPlayer(player){
+  try{
+    if(player) localStorage.setItem(CURRENT_PLAYER_KEY, JSON.stringify(player));
+    else localStorage.removeItem(CURRENT_PLAYER_KEY);
+  } catch(e){}
+}
+async function loginPlayer(name, pin){
+  if(!SUPA) return { error: 'Online play isn\u2019t set up yet.' };
+  if(!name || !/^[0-9]{4}$/.test(pin)) return { error: 'Enter a name and a 4-digit PIN.' };
+  try{
+    const { data, error } = await SUPA.rpc('login', { p_name: name, p_pin: pin });
+    if(error) return { error: 'Something went wrong reaching the server.' };
+    if(!data || data.length===0) return { error: 'Name and PIN don\u2019t match. Wrong PIN, or sign up if you\u2019re new.' };
+    const player = { id: data[0].id, name: data[0].name };
+    CURRENT_PLAYER = player; saveStoredPlayer(player);
+    return { player };
+  } catch(e){ return { error: 'Couldn\u2019t reach the server. Check your connection.' }; }
+}
+async function signupPlayer(name, pin){
+  if(!SUPA) return { error: 'Online play isn\u2019t set up yet.' };
+  if(!name || name.trim().length<1) return { error: 'Enter a name.' };
+  if(!/^[0-9]{4}$/.test(pin)) return { error: 'PIN must be exactly 4 digits.' };
+  try{
+    const { data, error } = await SUPA.rpc('signup', { p_name: name.trim(), p_pin: pin });
+    if(error){
+      if((error.message||'').includes('name_taken')) return { error: 'That name is already taken \u2014 try logging in instead, or pick a different name.' };
+      return { error: 'Something went wrong reaching the server.' };
+    }
+    const player = { id: data[0].id, name: data[0].name };
+    CURRENT_PLAYER = player; saveStoredPlayer(player);
+    return { player };
+  } catch(e){ return { error: 'Couldn\u2019t reach the server. Check your connection.' }; }
+}
+function logoutPlayer(){ CURRENT_PLAYER = null; saveStoredPlayer(null); }
+
+/* ---------------- Cloud stats sync ----------------
+   Reuses the exact same local career-stats shape and merge logic already built for file
+   import/export (mergeCareerMax, getCareerStats) — the cloud is just another source to merge
+   from/push to, not a separate system. Pull-then-merge-then-push on login keeps whichever device
+   has more complete data winning per-stat, same guarantee as the file import path. */
+async function pushCareerStatsToCloud(scope){
+  if(!SUPA || !CURRENT_PLAYER) return;
+  try{
+    const local = getCareerStats(scope);
+    await SUPA.from('career_stats').upsert({
+      player_id: CURRENT_PLAYER.id, scope, data: local, updated_at: new Date().toISOString(),
+    });
+  } catch(e){ console.error('Cloud stats push failed:', e); }
+}
+async function pullCareerStatsFromCloud(scope){
+  if(!SUPA || !CURRENT_PLAYER) return;
+  try{
+    const { data, error } = await SUPA.from('career_stats').select('data')
+      .eq('player_id', CURRENT_PLAYER.id).eq('scope', scope).maybeSingle();
+    if(error || !data) return;
+    const local = getCareerStats(scope);
+    mergeCareerMax(local.regular.bat, data.data.regular && data.data.regular.bat);
+    mergeCareerMax(local.regular.pitch, data.data.regular && data.data.regular.pitch);
+    mergeCareerMax(local.playoff.bat, data.data.playoff && data.data.playoff.bat);
+    mergeCareerMax(local.playoff.pitch, data.data.playoff && data.data.playoff.pitch);
+    saveCareerStats(scope, local);
+    CAREER_STATS = local; CAREER_STATS_SCOPE = scope;
+  } catch(e){ console.error('Cloud stats pull failed:', e); }
+}
+// Call this once on login: brings down whatever's in the cloud for both scopes, merges with
+// whatever's local, then immediately pushes the merged (now-authoritative) result back up so the
+// cloud and this device agree.
+async function syncCareerStatsOnLogin(){
+  for(const scope of ['mlb','draft-online']){
+    await pullCareerStatsFromCloud(scope);
+    await pushCareerStatsToCloud(scope);
+  }
+}
 
 function d20(){ return 1+Math.floor(Math.random()*20); }
 function d24(){ return 1+Math.floor(Math.random()*24); }
@@ -3112,7 +3229,45 @@ function renderSubmenu(){
   const wrap = el('div','roster-wrap');
 
   if(MENU_CATEGORY==='online'){
-    wrap.appendChild(el('div','rulesnote','Online Multiplayer is coming soon.'));
+    wrap.appendChild(el('div','team-label','Your Profile'));
+    if(!isSupabaseConfigured() || !SUPA){
+      wrap.appendChild(el('div','rulesnote','Online play isn\u2019t connected yet on this build \u2014 needs a Supabase project set up first.'));
+      root.appendChild(wrap);
+      return;
+    }
+    if(CURRENT_PLAYER){
+      wrap.appendChild(el('div','rulesnote', `Logged in as <b>${CURRENT_PLAYER.name}</b>. Your career stats sync automatically whenever you play.`));
+      const logoutBtn = el('button','btn small secondary','Log Out');
+      logoutBtn.onclick = ()=>{ logoutPlayer(); render(); };
+      wrap.appendChild(logoutBtn);
+      wrap.appendChild(el('div','rulesnote','Live online game modes (VS, Draft, Draft Season, MLB Season) are coming next.'));
+    } else {
+      wrap.appendChild(el('div','rulesnote','Log in or sign up with a name and 4-digit PIN \u2014 no email needed. Just enough to tell everyone\u2019s stats apart.'));
+      const nameInput = document.createElement('input');
+      nameInput.type='text'; nameInput.placeholder='Name'; nameInput.className='textinput'; nameInput.autocapitalize='words';
+      const pinInput = document.createElement('input');
+      pinInput.type='tel'; pinInput.inputMode='numeric'; pinInput.maxLength=4; pinInput.placeholder='4-digit PIN'; pinInput.className='textinput';
+      wrap.appendChild(nameInput); wrap.appendChild(pinInput);
+      const msgDiv = el('div','rulesnote','');
+      wrap.appendChild(msgDiv);
+      const btnRow = el('div','btnrow');
+      const loginBtn = el('button','btn small','Log In');
+      loginBtn.onclick = async ()=>{
+        msgDiv.textContent = 'Logging in\u2026';
+        const res = await loginPlayer(nameInput.value.trim(), pinInput.value.trim());
+        if(res.error){ msgDiv.textContent = res.error; render(); }
+        else { await syncCareerStatsOnLogin(); render(); }
+      };
+      const signupBtn = el('button','btn small secondary','Sign Up');
+      signupBtn.onclick = async ()=>{
+        msgDiv.textContent = 'Signing up\u2026';
+        const res = await signupPlayer(nameInput.value.trim(), pinInput.value.trim());
+        if(res.error){ msgDiv.textContent = res.error; render(); }
+        else { await syncCareerStatsOnLogin(); render(); }
+      };
+      btnRow.appendChild(loginBtn); btnRow.appendChild(signupBtn);
+      wrap.appendChild(btnRow);
+    }
     root.appendChild(wrap);
     return;
   }
@@ -4029,7 +4184,7 @@ function renderSeasonEndPrompt(){
     box.appendChild(el('div','confirm-msg', `Add this season\u2019s REGULAR SEASON stats to your ${scopeLabel} career totals? ${scopeLabel} careers are kept completely separate from other modes.`));
     const row = el('div','btnrow'); row.style.marginTop='16px';
     const yesBtn = el('button','btn small','Add to Career');
-    yesBtn.onclick = ()=>{ commitSeasonToCareer(scope, false); SEASON_END_STAGE = hasPlayoffStats ? 'career-playoff' : null; render(); };
+    yesBtn.onclick = ()=>{ commitSeasonToCareer(scope, false); pushCareerStatsToCloud(scope); SEASON_END_STAGE = hasPlayoffStats ? 'career-playoff' : null; render(); };
     const noBtn = el('button','btn small secondary','Skip');
     noBtn.onclick = ()=>{ SEASON_END_STAGE = hasPlayoffStats ? 'career-playoff' : null; render(); };
     row.appendChild(yesBtn); row.appendChild(noBtn);
@@ -4038,7 +4193,7 @@ function renderSeasonEndPrompt(){
     box.appendChild(el('div','confirm-msg', `Add this season\u2019s PLAYOFF stats to your ${scopeLabel} career playoff totals? These are tracked completely separately from your regular-season career stats.`));
     const row = el('div','btnrow'); row.style.marginTop='16px';
     const yesBtn = el('button','btn small','Add to Career');
-    yesBtn.onclick = ()=>{ commitSeasonToCareer(scope, true); SEASON_END_STAGE=null; render(); };
+    yesBtn.onclick = ()=>{ commitSeasonToCareer(scope, true); pushCareerStatsToCloud(scope); SEASON_END_STAGE=null; render(); };
     const noBtn = el('button','btn small secondary','Skip');
     noBtn.onclick = ()=>{ SEASON_END_STAGE=null; render(); };
     row.appendChild(yesBtn); row.appendChild(noBtn);
@@ -7289,6 +7444,9 @@ function renderGameOverOverlay(){
   root.appendChild(ov);
 }
 
+SUPA = initSupabase();
+CURRENT_PLAYER = loadStoredPlayer();
+if(SUPA && CURRENT_PLAYER){ syncCareerStatsOnLogin(); } // fire-and-forget on load; UI doesn't block on this
 render();
 </script>
 </body>
