@@ -429,6 +429,115 @@ async function syncCareerStatsOnLogin(){
   }
 }
 
+/* ---------------- ONLINE MULTIPLAYER: live game sync ----------------
+   The core idea: whoever acts computes the new state locally exactly as always (nothing about the
+   game engine itself changes), then that state gets pushed to a shared live_games row in Supabase.
+   The other device is subscribed to that row and applies whatever arrives. isHumanControls (above)
+   is what makes sure only the device whose turn it actually is ever tries to act in the first place —
+   this layer is purely about getting the resulting state from one screen to the other. */
+let ONLINE_GAME = null; // { id, joinCode, awayPlayerId, homePlayerId, myTeamKey } once in an online game, else null
+let APPLYING_REMOTE_UPDATE = false; // true only while applying a state update that arrived from the other device
+let ONLINE_CHANNEL = null; // the active Supabase Realtime channel, or null
+
+function pushOnlineGameState(){
+  if(!SUPA || !ONLINE_GAME) return;
+  SUPA.from('live_games').update({
+    state: { gs: GS, teams: TEAMS },
+    updated_at: new Date().toISOString(),
+    updated_by: CURRENT_PLAYER ? CURRENT_PLAYER.id : null,
+  }).eq('id', ONLINE_GAME.id).then(({error})=>{ if(error) console.error('Online push failed:', error); });
+}
+// Applies a state update that arrived from the OTHER device — sets the flag first so the render()
+// this triggers doesn't turn straight around and push the same state right back out.
+function applyRemoteGameState(state){
+  if(!state) return;
+  APPLYING_REMOTE_UPDATE = true;
+  GS = state.gs; TEAMS = state.teams;
+  render();
+  APPLYING_REMOTE_UPDATE = false;
+}
+function subscribeToOnlineGame(gameId){
+  if(!SUPA) return;
+  if(ONLINE_CHANNEL){ SUPA.removeChannel(ONLINE_CHANNEL); ONLINE_CHANNEL = null; }
+  const myId = CURRENT_PLAYER ? CURRENT_PLAYER.id : null;
+  const channel = SUPA.channel(`live_game:${gameId}`)
+    .on('postgres_changes', { event:'UPDATE', schema:'public', table:'live_games', filter:`id=eq.${gameId}` }, (payload)=>{
+      if(payload.new && payload.new.updated_by===myId) return; // our own push echoing back — already applied
+      applyRemoteGameState(payload.new ? payload.new.state : null);
+    })
+    .on('broadcast', { event:'dieRoll' }, (msg)=>{
+      if(msg.payload && msg.payload.fromPlayerId!==myId) playRemoteDieAnimation(msg.payload.sides, msg.payload.finalRoll, msg.payload.rollingStage);
+    })
+    .subscribe();
+  ONLINE_CHANNEL = channel;
+}
+function unsubscribeFromOnlineGame(){
+  if(SUPA && ONLINE_CHANNEL) SUPA.removeChannel(ONLINE_CHANNEL);
+  ONLINE_CHANNEL = null;
+}
+// Broadcasts a just-determined die roll so the other device can play the SAME cosmetic animation and
+// land on the SAME number — purely visual. The actual resulting game state arrives separately and
+// normally through the postgres_changes update above, so this never needs to carry real state.
+function broadcastDieRoll(sides, finalRoll, rollingStage){
+  if(!ONLINE_CHANNEL) return;
+  ONLINE_CHANNEL.send({ type:'broadcast', event:'dieRoll', payload:{ sides, finalRoll, rollingStage, fromPlayerId: CURRENT_PLAYER?CURRENT_PLAYER.id:null } });
+}
+function playRemoteDieAnimation(sides, finalRoll, rollingStage){
+  if(!GS) return;
+  GS.stage = rollingStage; GS.rollAnim = {sides, value: randInt(1,sides)}; render();
+  let ticks=0;
+  const iv=setInterval(()=>{
+    ticks++;
+    if(ticks>=8){ clearInterval(iv); GS.rollAnim=null; render(); return; }
+    GS.rollAnim.value = (ticks===7) ? finalRoll : randInt(1,sides);
+    render();
+  }, 55);
+}
+// Creates a brand-new online game: a live_games row with a freshly generated short join code, this
+// player already seated on whichever side they picked, the other side left open until someone joins.
+async function createOnlineGame(myTeamKey, awayTeam, homeTeam){
+  if(!SUPA || !CURRENT_PLAYER) return { error: 'You need to be logged in first.' };
+  try{
+    const { data: joinCode, error: codeErr } = await SUPA.rpc('generate_join_code');
+    if(codeErr) return { error: 'Couldn\u2019t reach the server.' };
+    const row = {
+      join_code: joinCode,
+      away_player_id: myTeamKey==='away' ? CURRENT_PLAYER.id : null,
+      home_player_id: myTeamKey==='home' ? CURRENT_PLAYER.id : null,
+      state: { gs: null, teams: { away: awayTeam, home: homeTeam } },
+    };
+    const { data, error } = await SUPA.from('live_games').insert(row).select().single();
+    if(error) return { error: 'Couldn\u2019t create the game.' };
+    ONLINE_GAME = { id:data.id, joinCode, awayPlayerId:row.away_player_id, homePlayerId:row.home_player_id, myTeamKey };
+    subscribeToOnlineGame(data.id);
+    return { joinCode };
+  } catch(e){ return { error: 'Couldn\u2019t reach the server. Check your connection.' }; }
+}
+// Joins an existing game by its short code, seating this player on whichever side is still open (or
+// reconnecting them to whichever side they already held, if they're rejoining after a disconnect).
+async function joinOnlineGame(joinCode){
+  if(!SUPA || !CURRENT_PLAYER) return { error: 'You need to be logged in first.' };
+  try{
+    const { data, error } = await SUPA.from('live_games').select('*').eq('join_code', (joinCode||'').trim().toUpperCase()).maybeSingle();
+    if(error) return { error: 'Couldn\u2019t reach the server.' };
+    if(!data) return { error: 'No game found with that code.' };
+    let myTeamKey; const updates = {};
+    if(!data.away_player_id){ myTeamKey='away'; updates.away_player_id = CURRENT_PLAYER.id; }
+    else if(!data.home_player_id){ myTeamKey='home'; updates.home_player_id = CURRENT_PLAYER.id; }
+    else if(data.away_player_id===CURRENT_PLAYER.id){ myTeamKey='away'; }
+    else if(data.home_player_id===CURRENT_PLAYER.id){ myTeamKey='home'; }
+    else return { error: 'That game already has two players.' };
+    if(Object.keys(updates).length){
+      const { error: updateErr } = await SUPA.from('live_games').update(updates).eq('id', data.id);
+      if(updateErr) return { error: 'Couldn\u2019t join the game.' };
+    }
+    ONLINE_GAME = { id:data.id, joinCode:data.join_code, awayPlayerId:updates.away_player_id||data.away_player_id, homePlayerId:updates.home_player_id||data.home_player_id, myTeamKey };
+    subscribeToOnlineGame(data.id);
+    return { joined:true, myTeamKey, state:data.state };
+  } catch(e){ return { error: 'Couldn\u2019t reach the server. Check your connection.' }; }
+}
+function leaveOnlineGame(){ unsubscribeFromOnlineGame(); ONLINE_GAME = null; }
+
 function d20(){ return 1+Math.floor(Math.random()*20); }
 function d24(){ return 1+Math.floor(Math.random()*24); }
 function randInt(a,b){ return a+Math.floor(Math.random()*(b-a+1)); }
@@ -3013,20 +3122,25 @@ function readableTextColor(hexBg){
 }
 function isHumanControls(teamKey){
   if(SIM_ACTIVE) return false;
+  if(ONLINE_GAME) return teamKey===ONLINE_GAME.myTeamKey;
   if(SEASON_GAME_IDX!==null || PLAYOFF_MATCH_REF!==null) return teamKey==='away' ? SEASON_AWAY_HUMAN : SEASON_HOME_HUMAN;
   if(MODE==='pvp') return true;
   return teamKey===HUMAN_SIDE;
-} // Vs Computer: human controls whichever side was picked on the side-select screen. Season/playoff games: controlled per-team by SEASON.humanControlled.
+} // Vs Computer: human controls whichever side was picked on the side-select screen. Season/playoff games: controlled per-team by SEASON.humanControlled. Online: controlled per-team by which side THIS device's logged-in player is playing — every decision point in the game already gates on this one function, so this single check is what makes turn-based online play "just work" everywhere (pitching, swinging, stealing, pitching changes, all of it) without touching each of those call sites individually.
 
 /* ---------------- DIE ANIMATION ---------------- */
 function startDieRoll(sides, rollingStage, onDone){
   GS.stage = rollingStage;
+  // Determined immediately now (previously only rolled on the final tick) — same distribution
+  // either way, just settled earlier so online play can broadcast the target value right away and
+  // let the other device's screen animate toward the identical result.
+  const finalRoll = randInt(1,sides);
   if(SIM_ACTIVE){
-    const finalRoll = randInt(1,sides);
     GS.rollAnim = null;
     onDone(finalRoll);
     return;
   }
+  if(ONLINE_GAME) broadcastDieRoll(sides, finalRoll, rollingStage);
   GS.rollAnim = {sides, value: randInt(1,sides)};
   render();
   let ticks=0;
@@ -3034,7 +3148,6 @@ function startDieRoll(sides, rollingStage, onDone){
     ticks++;
     if(ticks>=8){
       clearInterval(iv);
-      const finalRoll = randInt(1,sides);
       GS.rollAnim=null;
       onDone(finalRoll);
       return;
@@ -3107,6 +3220,7 @@ function renderConfirmOverlay(){
 function render(){
   if(SIM_ACTIVE) return;
   renderReal();
+  if(ONLINE_GAME && !APPLYING_REMOTE_UPDATE) pushOnlineGameState();
 }
 
 /* ---------------- FAST FORWARD / SIMULATION ---------------- */
