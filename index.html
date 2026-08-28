@@ -3355,6 +3355,7 @@ function simStep(){
       else { afterPlateAppearance(); }
       return true;
     case 'gb-unforced-choice': GS.stage='gb-unforced-defense-choice'; return true; // sim default: always send [SIMPLIFIED]
+    case 'steal-defense-throw': { const base=GS.pendingSteal.base; GS.pendingSteal=null; initiateSteal(base); return true; }
     case 'gb-unforced-defense-choice': resolveGbUnforcedConcede(); return true; // sim default: always take the sure out [SIMPLIFIED]
     case 'gb-unforced-result': GS.contestResult=null; afterPlateAppearance(); return true;
     case 'tagup-choice': initiateTagUp(true); return true;
@@ -3362,11 +3363,18 @@ function simStep(){
     case 'infieldin-gb-choice': initiateInfieldInGB(true); return true; // sim default: always send [SIMPLIFIED]
     case 'infieldin-gb-result': GS.contestResult=null; afterPlateAppearance(); return true;
     case 'extrabase-choice': answerExtraBaseStep(true); return true;
+    case 'extrabase-defense-throw': {
+      // Now reached during every sim burst with exactly one runner sent, since resolveExtraBaseDecisions
+      // always hands off to this stage regardless of who's controlling the defense (the render function
+      // is what decides real choice vs. CPU default vs. online wait — simStep needs its own equivalent).
+      const c = GS.pendingExtraBaseThrow; GS.pendingExtraBaseThrow=null;
+      resolveContestedExtraBase(c.contested, c.autoSafeOther);
+      return true;
+    }
     case 'extrabase-defense-pick': {
-      // Should never actually be reached during a sim burst — isHumanControls always returns false
-      // while SIM_ACTIVE, so resolveExtraBaseDecisions() already takes the CPU heuristic branch and
-      // resolves immediately without setting this stage. Kept as a defensive fallback (mirrors the
-      // same "protect the plate first" heuristic) rather than risking simStep ever stalling here.
+      // Now reached during every sim burst with two runners sent, since resolveExtraBaseDecisions
+      // always hands off to this stage regardless of who's controlling the defense — mirrors the same
+      // "protect the plate first" heuristic the render function itself uses for a genuine CPU.
       const eb = GS.extraBase;
       const sentList = eb.candidates.filter((c,i)=>eb.sent[i]);
       const contested = sentList.find(c=>c.toBase==='home') || sentList[0];
@@ -6505,7 +6513,13 @@ function renderGame(){
   // so the card up top never jumps ahead of what the play-by-play below is still describing. Only
   // once a fresh at-bat genuinely begins (defense-choice / offense-choice / pitch-thrown /
   // swing-rolling — no result to hold onto yet) does this show the batter who's actually next up.
-  const stillShowingLastPA = GS.lastResolved && !['defense-choice','offense-choice','pitch-thrown','swing-rolling'].includes(GS.stage);
+  // Steals are the one exception in the OTHER direction: a steal attempt can happen mid-at-bat,
+  // before the CURRENT batter has had any plate appearance to resolve at all — lastResolved at that
+  // point would still be pointing at whoever's PREVIOUS at-bat concluded, showing the wrong batter
+  // entirely (the person actually standing at the plate right now, mid-count, gets bumped off their
+  // own card by whoever hit last).
+  const freshBatterStages = ['defense-choice','offense-choice','pitch-thrown','swing-rolling','steal-defense-throw','steal-rolling','steal-result'];
+  const stillShowingLastPA = GS.lastResolved && !freshBatterStages.includes(GS.stage);
   const displayBatter = stillShowingLastPA ? GS.lastResolved.batter : currentBatter(GS);
   vs.appendChild(renderFullCard(displayBatter, TEAMS[battingTeamKey(GS)], {isPitcher:false, onBaseBonus: GS.onBaseBonus}));
   m.appendChild(vs);
@@ -6544,9 +6558,13 @@ function renderDecisionFlow(m){
       GS.stage='offense-choice';
       renderDecisionFlow(m);
       return;
-    case 'offense-choice':
-      if(isHumanControls(tk)){ renderOffenseChoice(m, runnerOnBase, canSteal2, canSteal3); return; }
-      return; // maybeAutoAdvance() (called at the end of render()) will fire doThrowPitch via setTimeout
+    case 'offense-choice': {
+      let shown = false;
+      if(isHumanControls(tk)){ renderOffenseChoice(m, runnerOnBase, canSteal2, canSteal3); shown = true; }
+      if(isHumanControls(fk)){ renderDefenseReadyToPitch(m); shown = true; }
+      if(!shown) return; // maybeAutoAdvance() (called at the end of render()) will fire doThrowPitch via setTimeout for a genuine CPU opponent, or show a waiting message for an online one
+      return;
+    }
     case 'pitch-rolling': renderRollingDie(m, 'Pitch Roll'); return;
     case 'pitch-thrown': renderPitchThrown(m); return;
     case 'swing-rolling': renderSwingRolling(m); return;
@@ -6555,6 +6573,7 @@ function renderDecisionFlow(m){
     case 'tagup-rolling': renderRollingDie(m, 'Outfield Defense Roll'); return;
     case 'tagup-result': renderContestResult(m); return;
     case 'extrabase-choice': renderExtraBaseChoice(m); return;
+    case 'extrabase-defense-throw': renderExtraBaseDefenseThrow(m); return;
     case 'extrabase-defense-pick': renderExtraBaseDefensePick(m); return;
     case 'extrabase-rolling': renderRollingDie(m, 'Outfield Defense Roll'); return;
     case 'extrabase-result': renderContestResult(m); return;
@@ -6562,6 +6581,7 @@ function renderDecisionFlow(m){
     case 'dp-result': renderContestResult(m); return;
     case 'dp-or-force3-choice': renderDPOrForce3Choice(m); return;
     case 'gb-unforced-choice': renderGbUnforcedChoice(m); return;
+    case 'steal-defense-throw': renderStealDefenseThrow(m); return;
     case 'gb-unforced-defense-choice': renderGbUnforcedDefenseChoice(m); return;
     case 'gb-unforced-rolling': renderRollingDie(m, 'Infield Defense Roll'); return;
     case 'gb-unforced-result': renderContestResult(m); return;
@@ -6640,8 +6660,6 @@ function renderOffenseChoice(m, runnerOnBase, canSteal2, canSteal3){
   const dz = el('div','decision');
   dz.innerHTML = `<div class="lbl">Offense: ${TEAMS[tk].nick}</div>`;
   const row = el('div','btnrow');
-  const swingBtn = el('button','btn small','Throw Pitch'); swingBtn.onclick=doThrowPitch;
-  row.appendChild(swingBtn);
   if(subsAllowed(GS) && TEAMS[tk].bench.length>0){
     const phBtn = el('button','btn small secondary','Pinch Hit');
     phBtn.onclick=()=>{ GS.stage='sub-pinchhit-bench'; render(); };
@@ -6660,7 +6678,18 @@ function renderOffenseChoice(m, runnerOnBase, canSteal2, canSteal3){
   if(canSteal2){ const s=el('button','btn small blueline','Steal 2nd'); s.onclick=()=>confirmSteal(2); row.appendChild(s); }
   if(canSteal3){ const s=el('button','btn small blueline','Steal 3rd'); s.onclick=()=>confirmSteal(3); row.appendChild(s); }
   if(runnerOnBase){ const bnt=el('button','btn small secondary','Sac Bunt'); bnt.onclick=initiateBunt; row.appendChild(bnt); }
-  dz.appendChild(row);
+  if(row.children.length===0){ dz.appendChild(el('div','rulesnote','No moves available \u2014 waiting for the pitch.')); }
+  else { dz.appendChild(row); }
+  m.appendChild(dz);
+}
+// Throwing the pitch is the fielding side's action, not the batting side's — it belongs here, gated
+// to the defense, separately from whatever offense-side choices (steal, pinch hit, bunt) render
+// above at this same stage. Both sections can appear together on one screen for local pass-and-play
+// (one person controls both sides there), or independently on each player's own device online.
+function renderDefenseReadyToPitch(m){
+  const dz = el('div','decision');
+  const btn = el('button','btn small','Throw Pitch'); btn.onclick=doThrowPitch;
+  dz.appendChild(btn);
   m.appendChild(dz);
 }
 
@@ -7042,9 +7071,35 @@ function confirmSteal(base){
     offenseLabel: 'Runner Speed', offenseValue: offValue,
     defenseLabel: 'Battery Defense'+(bonus?' (+3 vs 3rd)':''), defenseValue: defValue,
     confirmLabel: `Steal ${base===2?'2nd':'3rd'}`,
-    onConfirm: ()=>initiateSteal(base),
+    // Doesn't roll immediately — the throw itself belongs to the defense, not the offense who just
+    // decided to send the runner. Handing off to a dedicated stage means the DEFENSE's own device is
+    // the one that actually calls startDieRoll below, exactly like every other defensive roll.
+    onConfirm: ()=>{ GS.pendingSteal={base}; GS.stage='steal-defense-throw'; render(); },
   };
   render();
+}
+// The defense's half of a steal attempt: same matchup the offense already confirmed, but the actual
+// throw is triggered here, on the fielding side, so the fielding side's device is the one that
+// executes startDieRoll for this contest — not the batting side who initiated the attempt.
+function renderStealDefenseThrow(m){
+  const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
+  const base = GS.pendingSteal.base;
+  const runnerIdx = base===2?0:1;
+  const runnerName = GS.bases[runnerIdx];
+  const bonus = base===3?3:0;
+  const defValue = TEAMS[fk].defense.battery+bonus+fielderBonus(fk,'C');
+  const offValue = runnerSpeed(tk, runnerName);
+  const dz = el('div','decision');
+  dz.innerHTML = `<div class="lbl">${runnerName} Stealing ${base===2?'2nd':'3rd'} \u2014 Defense Throws</div>
+    <div class="rulesnote">Battery Defense${bonus?' (+3 vs 3rd)':''}: <b>${defValue}</b> vs Runner Speed: <b>${offValue}</b></div>`;
+  m.appendChild(dz);
+  const doThrow = ()=>{ GS.pendingSteal=null; initiateSteal(base); };
+  if(isHumanControls(fk)){
+    const btn = el('button','btn blueline','Attempt Throw'); btn.onclick=doThrow;
+    dz.appendChild(btn);
+  } else {
+    autoAdvanceOrWait(dz, fk, doThrow, 'Waiting for the defense to attempt the throw\u2026');
+  }
 }
 function initiateSteal(base){
   const fk=fieldingTeamKey(GS), tk=battingTeamKey(GS);
@@ -7507,39 +7562,59 @@ function resolveExtraBaseDecisions(){
     return;
   }
   if(sentList.length===1){
-    resolveContestedExtraBase(sentList[0], null);
+    // Hand off to a dedicated defense-throw stage, same as the two-runner case just below — the
+    // throw itself belongs to the defense's own device, not whichever side just decided to send.
+    GS.pendingExtraBaseThrow = { contested: sentList[0], autoSafeOther: null };
+    GS.stage = 'extrabase-defense-throw';
+    render();
     return;
   }
+  // Always hand off to the defense-pick stage, regardless of who's controlling that side — the render
+  // function for that stage is what decides whether to show a real choice, auto-pick for a genuine
+  // CPU, or wait for an online opponent, exactly like every other decision point already works.
+  GS.stage = 'extrabase-defense-pick';
+  render();
+}
+// The single-sent-runner case: no "which one" choice needed, but the throw itself is still the
+// defense's action, triggered on the defense's own device.
+function renderExtraBaseDefenseThrow(m){
   const fk = fieldingTeamKey(GS);
+  const {contested} = GS.pendingExtraBaseThrow;
+  const dz = el('div','decision');
+  dz.innerHTML = `<div class="lbl">${contested.runnerName} Sent to ${contested.toBase==='home'?'Home':'3rd'} \u2014 Defense Throws</div>`;
+  m.appendChild(dz);
+  const doThrow = ()=>{ const c=GS.pendingExtraBaseThrow; GS.pendingExtraBaseThrow=null; resolveContestedExtraBase(c.contested, c.autoSafeOther); };
   if(isHumanControls(fk)){
-    GS.stage = 'extrabase-defense-pick';
-    render();
+    const btn = el('button','btn blueline','Attempt Throw'); btn.onclick=doThrow;
+    dz.appendChild(btn);
   } else {
-    // CPU defense heuristic: always protect the plate first when forced to pick one [SIMPLIFIED]
-    const contested = sentList.find(c=>c.toBase==='home') || sentList[0];
-    const other = sentList.find(c=>c!==contested);
-    resolveContestedExtraBase(contested, other);
+    autoAdvanceOrWait(dz, fk, doThrow, 'Waiting for the defense to attempt the throw\u2026');
   }
 }
 
 function renderExtraBaseDefensePick(m){
+  const fk = fieldingTeamKey(GS);
   const eb = GS.extraBase;
   const sentList = eb.candidates.filter((c,i)=>eb.sent[i]);
   const dz = el('div','decision');
   dz.innerHTML = `<div class="lbl">Two Runners Sent — Which Do You Throw At?</div>`;
   m.appendChild(dz);
-  const row = el('div','btnrow');
-  sentList.forEach(cand=>{
-    const label = cand.toBase==='home' ? `Throw Home (vs ${cand.runnerName})` : `Throw to 3rd (vs ${cand.runnerName})`;
-    const btn = el('button','btn small blueline', label);
-    btn.onclick = ()=>{
-      const other = sentList.find(c=>c!==cand);
-      resolveContestedExtraBase(cand, other);
-    };
-    row.appendChild(btn);
-  });
-  dz.appendChild(row);
-  m.appendChild(dz);
+  const pickAndResolve = (cand)=>{ const other = sentList.find(c=>c!==cand); resolveContestedExtraBase(cand, other); };
+  if(isHumanControls(fk)){
+    const row = el('div','btnrow');
+    sentList.forEach(cand=>{
+      const label = cand.toBase==='home' ? `Throw Home (vs ${cand.runnerName})` : `Throw to 3rd (vs ${cand.runnerName})`;
+      const btn = el('button','btn small blueline', label);
+      btn.onclick = ()=>pickAndResolve(cand);
+      row.appendChild(btn);
+    });
+    dz.appendChild(row);
+  } else {
+    // CPU heuristic (always protect the plate first when forced to pick one [SIMPLIFIED]) only
+    // applies to a genuine CPU opponent — an online opponent gets a real waiting message instead and
+    // makes this pick on their own device when their turn actually comes.
+    autoAdvanceOrWait(dz, fk, ()=>pickAndResolve(sentList.find(c=>c.toBase==='home') || sentList[0]), 'Waiting for the defense to decide which runner to throw at\u2026');
+  }
 }
 
 // Resolves the play. `contested` is the runner the defense actually threw at (a Defensive Throw,
@@ -7705,9 +7780,15 @@ function maybeAutoAdvance(){
     setTimeout(()=>{ if(GS && GS.stage==='defense-choice'){ GS.stage='offense-choice'; render(); } }, 300);
     return;
   }
-  if(!isHumanControls(tk) && GS.stage==='offense-choice'){
-    if(isOnlineOpponentTeam(tk)) return;
-    setTimeout(()=>{ if(GS && GS.stage==='offense-choice'){ doThrowPitch(); } }, 400);
+  if(!isHumanControls(fk) && GS.stage==='offense-choice'){
+    if(isOnlineOpponentTeam(fk)) return;
+    // This used to belong to the batting side itself (a CPU batter deciding not to steal, safe to
+    // move on quickly). Now that throwing the pitch is the defense's action, a genuine human batter
+    // facing a CPU defense needs real time to actually consider a steal attempt first — 400ms was
+    // fine when the timer belonged to whoever was deciding, but it's much too fast to hand someone
+    // else the trigger while a real person is still looking at their own options.
+    const delay = isHumanControls(tk) ? 2500 : 400;
+    setTimeout(()=>{ if(GS && GS.stage==='offense-choice'){ doThrowPitch(); } }, delay);
     return;
   }
   if(!isHumanControls(tk) && GS.stage==='pitch-thrown'){
