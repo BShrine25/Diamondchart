@@ -3319,7 +3319,24 @@ function renderRollConfirmPopup(){
 // once for real when it's done.
 function render(){
   if(SIM_ACTIVE) return;
-  renderReal();
+  // Safety net: without this, any exception thrown mid-render leaves root exactly as renderReal's own
+  // root.innerHTML='' left it — genuinely blank white, with nothing in the console visible to anyone
+  // but a developer, and no way to tell what actually failed. This turns that into a real, readable
+  // error with enough detail to actually diagnose and fix, plus a way to get back to a working screen
+  // without losing the whole session.
+  try {
+    renderReal();
+  } catch(e){
+    console.error('Render error:', e);
+    root.innerHTML = `<div style="padding:20px; font-family:monospace; font-size:13px; color:#111; background:#fff; line-height:1.5;">
+      <h3 style="color:#b00020;">Something went wrong showing this screen</h3>
+      <p><b>${(e && e.message) || 'Unknown error'}</b></p>
+      <pre style="white-space:pre-wrap; font-size:11px; background:#f4f4f4; padding:10px; border-radius:6px; max-height:240px; overflow:auto;">${(e && e.stack) || ''}</pre>
+      <p>Screenshotting this and sending it back is the fastest way to get it fixed.</p>
+      <button onclick="location.reload()" style="padding:10px 18px; font-size:14px; border-radius:8px; border:none; background:#b00020; color:#fff;">Reload</button>
+    </div>`;
+    return;
+  }
   // Suppress the online push while a die-roll animation is actively ticking. startDieRoll (and its
   // cosmetic mirror, playRemoteDieAnimation) call render() up to 8 times per roll, ~55ms apart —
   // pushing the full game state on every single one of those ticks flooded Supabase with rapid,
@@ -6563,7 +6580,12 @@ function renderDecisionFlow(m){
       // pitching-change options at all. This is exactly what caused "the defense never sees any
       // choices, only Throw Pitch" — their own screen was being skipped past by the other player's
       // device before it could ever render.
-      if(isOnlineOpponentTeam(fk)) return;
+      if(isOnlineOpponentTeam(fk)){
+        const dz = el('div','decision');
+        dz.appendChild(el('div','rulesnote','Waiting for the defense to get ready\u2026'));
+        m.appendChild(dz);
+        return;
+      }
       GS.stage='offense-choice';
       renderDecisionFlow(m);
       return;
