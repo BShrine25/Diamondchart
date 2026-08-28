@@ -6555,6 +6555,15 @@ function renderDecisionFlow(m){
   switch(GS.stage){
     case 'defense-choice':
       if(isHumanControls(fk)){ renderDefenseChoice(m, canInfieldIn); return; }
+      // Critical: don't skip ahead for the other real player online. This branch used to
+      // unconditionally mutate GS.stage and recurse whenever isHumanControls(fk) was false on THIS
+      // device — correct for a genuine CPU (nothing to wait for), but online it meant the batting
+      // player's own device would immediately overwrite the shared stage the instant it rendered the
+      // fielding side's turn, before the fielding player's own device ever got a chance to show them
+      // pitching-change options at all. This is exactly what caused "the defense never sees any
+      // choices, only Throw Pitch" — their own screen was being skipped past by the other player's
+      // device before it could ever render.
+      if(isOnlineOpponentTeam(fk)) return;
       GS.stage='offense-choice';
       renderDecisionFlow(m);
       return;
@@ -6596,6 +6605,7 @@ function renderDecisionFlow(m){
     case 'sub-def-slot': renderDefSubSlotPick(m); return;
     case 'sub-def-bench': renderDefSubBenchPick(m); return;
     case 'sub-pitching-pick': renderPitchingChangePick(m); return;
+    case 'sub-switch-positions': renderSwitchPositions(m); return;
     case 'sub-emergency-pick': renderEmergencyPitcherPick(m); return;
     case 'sub-emergency-def-replace': renderEmergencyDefReplace(m); return;
     case 'sub-pinchhit-bench': renderPinchHitBenchPick(m); return;
@@ -6651,7 +6661,50 @@ function renderDefenseChoice(m, canInfieldIn){
     epBtn.onclick=()=>{ GS.stage='sub-emergency-pick'; render(); };
     row.appendChild(epBtn);
   }
+  // The defense can always rearrange which of its current fielders plays where — no sub involved,
+  // just swapping two players' positions with each other (e.g. to get someone back to their real
+  // spot instead of carrying an out-of-position penalty after an earlier substitution).
+  const switchBtn = el('button','btn small secondary','Switch Positions');
+  switchBtn.onclick=()=>{ GS.switchPickIdx=null; GS.stage='sub-switch-positions'; render(); };
+  row.appendChild(switchBtn);
   dz.appendChild(row);
+  m.appendChild(dz);
+}
+
+// Lets the defense swap two of its current fielders' positions with each other — no sub involved,
+// just rearranging who plays where (e.g. moving a player back to their real position instead of
+// carrying an out-of-position penalty after an earlier pinch-hit substitution). Tap one fielder,
+// then tap a second to swap them; tapping the same one again cancels the pick.
+function renderSwitchPositions(m){
+  const fk = fieldingTeamKey(GS);
+  const dz = el('div','decision');
+  if(GS.switchPickIdx==null){
+    dz.innerHTML = `<div class="lbl">Switch Positions \u2014 Tap a Fielder to Move</div>`;
+  } else {
+    const first = TEAMS[fk].lineup[GS.switchPickIdx];
+    dz.innerHTML = `<div class="lbl">Moving ${first.name} (${first.pos}) \u2014 Tap Who to Swap With</div>`;
+  }
+  const row = el('div','btnrow');
+  TEAMS[fk].lineup.forEach((p,i)=>{
+    if(p.pos==='DH') return; // DH doesn't field at all — nothing to swap
+    const isPicked = GS.switchPickIdx===i;
+    const btn = el('button','btn small'+(isPicked?'':' secondary'), `${p.name} (${p.pos})`);
+    btn.onclick=()=>{
+      if(GS.switchPickIdx==null){ GS.switchPickIdx=i; render(); return; }
+      if(GS.switchPickIdx===i){ GS.switchPickIdx=null; render(); return; }
+      const a = TEAMS[fk].lineup[GS.switchPickIdx], b = TEAMS[fk].lineup[i];
+      const posA = a.pos, posB = b.pos;
+      logEntry(GS, `${TEAMS[fk].nick} switch ${a.name} (${posA}) and ${b.name} (${posB}).`);
+      a.pos = posB; b.pos = posA;
+      GS.switchPickIdx = null;
+      GS.stage = 'defense-choice';
+      render();
+    };
+    row.appendChild(btn);
+  });
+  dz.appendChild(row);
+  const doneBtn = el('button','btn small secondary','Done'); doneBtn.onclick=()=>{ GS.switchPickIdx=null; GS.stage='defense-choice'; render(); };
+  dz.appendChild(doneBtn);
   m.appendChild(dz);
 }
 
@@ -6678,6 +6731,23 @@ function renderOffenseChoice(m, runnerOnBase, canSteal2, canSteal3){
   if(canSteal2){ const s=el('button','btn small blueline','Steal 2nd'); s.onclick=()=>confirmSteal(2); row.appendChild(s); }
   if(canSteal3){ const s=el('button','btn small blueline','Steal 3rd'); s.onclick=()=>confirmSteal(3); row.appendChild(s); }
   if(runnerOnBase){ const bnt=el('button','btn small secondary','Sac Bunt'); bnt.onclick=initiateBunt; row.appendChild(bnt); }
+  // Online only: the offense gets an explicit "Continue" to signal they're done deciding, so the
+  // defense's Throw Pitch can't fire out from under them while they're still weighing a steal, bunt,
+  // or sub — a 30-second auto-continue keeps the game from stalling if someone steps away.
+  if(ONLINE_GAME){
+    if(!GS.offenseTimerArmed){
+      GS.offenseTimerArmed = true;
+      const myToken = GS.offenseTimerToken = (GS.offenseTimerToken||0)+1;
+      setTimeout(()=>{
+        if(GS && GS.stage==='offense-choice' && GS.offenseTimerToken===myToken && !GS.offenseReady){
+          GS.offenseReady = true;
+          render();
+        }
+      }, 30000);
+    }
+    const contBtn = el('button','btn','Continue'); contBtn.onclick=()=>{ GS.offenseReady=true; render(); };
+    row.appendChild(contBtn);
+  }
   if(row.children.length===0){ dz.appendChild(el('div','rulesnote','No moves available \u2014 waiting for the pitch.')); }
   else { dz.appendChild(row); }
   m.appendChild(dz);
@@ -6685,11 +6755,27 @@ function renderOffenseChoice(m, runnerOnBase, canSteal2, canSteal3){
 // Throwing the pitch is the fielding side's action, not the batting side's — it belongs here, gated
 // to the defense, separately from whatever offense-side choices (steal, pinch hit, bunt) render
 // above at this same stage. Both sections can appear together on one screen for local pass-and-play
-// (one person controls both sides there), or independently on each player's own device online.
+// (one person controls both sides there), or independently on each player's own device online. For
+// an online game specifically, this also waits for the offense's explicit Continue (or its 30-second
+// auto-continue) before showing anything actionable, so the defense can't throw out from under an
+// offense that's still deciding whether to steal, bunt, or sub.
 function renderDefenseReadyToPitch(m){
   const dz = el('div','decision');
-  const btn = el('button','btn small','Throw Pitch'); btn.onclick=doThrowPitch;
-  dz.appendChild(btn);
+  if(ONLINE_GAME && !GS.offenseReady){
+    dz.appendChild(el('div','rulesnote','Waiting for the offense to decide (steal, bunt, sub) or continue\u2026'));
+  } else {
+    if(ONLINE_GAME && !GS.defenseTimerArmed){
+      GS.defenseTimerArmed = true;
+      const myToken = GS.defenseTimerToken = (GS.defenseTimerToken||0)+1;
+      setTimeout(()=>{
+        if(GS && GS.stage==='offense-choice' && GS.offenseReady && GS.defenseTimerToken===myToken){
+          doThrowPitch();
+        }
+      }, 30000);
+    }
+    const btn = el('button','btn small','Throw Pitch'); btn.onclick=doThrowPitch;
+    dz.appendChild(btn);
+  }
   m.appendChild(dz);
 }
 
@@ -6823,7 +6909,9 @@ function renderPinchHitBenchPick(m){
   dz.innerHTML = `<div class="lbl">Pinch Hit for ${slot.name} (${slot.pos})?</div>`;
   const row = el('div','btnrow');
   TEAMS[tk].bench.forEach((p,i)=>{
-    if(!eligibleFor(p, slot.pos)) return;
+    // Any bench player can pinch hit here — not just someone who happens to also be eligible at the
+    // vacated position. If they stay in defensively afterward, the out-of-position penalty below
+    // applies unless the manager rearranges the defense between innings (see Switch Positions).
     const outOfPosition = slot.pos!=='DH' && !(p.elig && p.elig.includes(slot.pos));
     const btn = el('button','btn small secondary', outOfPosition ? `${p.name} (${OUT_OF_POSITION_PENALTY} penalty in field)` : p.name);
     btn.onclick=()=>{
@@ -6881,6 +6969,10 @@ function renderPinchRunBenchPick(m){
 
 /* ---------------- PITCH / SWING ---------------- */
 function doThrowPitch(){
+  // Reset the offense-ready and defense-timer tracking now, on the way out of offense-choice — by
+  // the time we're back here for the next batter, these need to start fresh rather than carrying
+  // over stale state from this at-bat.
+  GS.offenseReady = false; GS.offenseTimerArmed = false; GS.defenseTimerArmed = false;
   startDieRoll(20, 'pitch-rolling', (roll)=>{
     GS.pending = computePitchInfo(GS, roll, GS.pitchBonus);
     GS.pitchBonus = 0;
