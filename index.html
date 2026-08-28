@@ -441,8 +441,18 @@ let ONLINE_CHANNEL = null; // the active Supabase Realtime channel, or null
 
 function pushOnlineGameState(){
   if(!SUPA || !ONLINE_GAME) return;
+  // Sets don't survive JSON serialization — Supabase stores state as jsonb, and
+  // JSON.stringify(new Set(['x'])) produces "{}" with the actual contents silently gone. GS.
+  // pitcherRemoved is the one Set living inside the persisted game state; converting it to a plain
+  // array just for the wire (without touching the real local GS, which needs to keep using actual
+  // Sets for every .has()/.add() call elsewhere in the game engine) is what makes it survive the
+  // round-trip. This is exactly what caused "GS.pitcherRemoved[fk].has is not a function" the moment
+  // a state that had passed through the network got rendered.
+  const wireGS = GS ? Object.assign({}, GS, {
+    pitcherRemoved: { away: Array.from(GS.pitcherRemoved.away), home: Array.from(GS.pitcherRemoved.home) },
+  }) : null;
   SUPA.from('live_games').update({
-    state: { gs: GS, teams: TEAMS },
+    state: { gs: wireGS, teams: TEAMS },
     updated_at: new Date().toISOString(),
     updated_by: CURRENT_PLAYER ? CURRENT_PLAYER.id : null,
   }).eq('id', ONLINE_GAME.id).then(({error})=>{ if(error) console.error('Online push failed:', error); });
@@ -452,7 +462,20 @@ function pushOnlineGameState(){
 function applyRemoteGameState(state){
   if(!state) return;
   APPLYING_REMOTE_UPDATE = true;
-  GS = state.gs; TEAMS = state.teams;
+  GS = state.gs;
+  // Reverse of the wire-format conversion in pushOnlineGameState: plain arrays back into real Sets,
+  // so every .has()/.add() call throughout the game engine keeps working on a state that arrived
+  // from the network exactly as it would on a state that never left this device.
+  if(GS && GS.pitcherRemoved){
+    // Array.isArray guards against a game row saved before this fix existed, where pitcherRemoved
+    // would have already been mangled into {} by the original bug — new Set({}) throws outright,
+    // so falling back to an empty array there (losing that one game's removed-pitcher history, but
+    // not crashing) is the safe choice for any in-progress game created before this shipped.
+    const awayArr = Array.isArray(GS.pitcherRemoved.away) ? GS.pitcherRemoved.away : [];
+    const homeArr = Array.isArray(GS.pitcherRemoved.home) ? GS.pitcherRemoved.home : [];
+    GS.pitcherRemoved = { away: new Set(awayArr), home: new Set(homeArr) };
+  }
+  TEAMS = state.teams;
   // SCREEN itself is never part of the synced payload — only GS/TEAMS travel between devices. A
   // real, non-null GS arriving while this device is still sitting on the roster-setup screen is the
   // unambiguous signal that the other side just started the game (see the away-only Play Ball gate in
