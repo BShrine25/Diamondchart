@@ -488,7 +488,13 @@ function playRemoteDieAnimation(sides, finalRoll, rollingStage){
   let ticks=0;
   const iv=setInterval(()=>{
     ticks++;
-    if(ticks>=8){ clearInterval(iv); GS.rollAnim=null; render(); return; }
+    // The real, authoritative state update for this exact roll can legitimately arrive from the
+    // other device WHILE this purely cosmetic animation is still ticking (it's racing a real network
+    // round-trip against a fixed local timer) — when it does, applyRemoteGameState reassigns GS
+    // entirely, with rollAnim already cleared. Without checking for that here, the next tick would
+    // try to mutate a null rollAnim and throw, which silently kills the interval mid-loop (clearInterval
+    // never gets reached) and leaves the screen stuck on whatever last rendered.
+    if(ticks>=8 || !GS || !GS.rollAnim){ clearInterval(iv); if(GS) GS.rollAnim=null; render(); return; }
     GS.rollAnim.value = (ticks===7) ? finalRoll : randInt(1,sides);
     render();
   }, 55);
@@ -3176,6 +3182,10 @@ function startDieRoll(sides, rollingStage, onDone){
   let ticks=0;
   const iv=setInterval(()=>{
     ticks++;
+    // Same defensive check as playRemoteDieAnimation: an out-of-order or delayed remote update could
+    // in principle reassign GS mid-animation here too — bail cleanly instead of throwing on a null
+    // rollAnim, which would otherwise silently kill the interval and leave the roll stuck on screen.
+    if(!GS || !GS.rollAnim){ clearInterval(iv); if(GS) GS.rollAnim=null; onDone(finalRoll); return; }
     if(ticks>=8){
       clearInterval(iv);
       GS.rollAnim=null;
@@ -3273,7 +3283,14 @@ function renderRollConfirmPopup(){
 function render(){
   if(SIM_ACTIVE) return;
   renderReal();
-  if(ONLINE_GAME && !APPLYING_REMOTE_UPDATE) pushOnlineGameState();
+  // Suppress the online push while a die-roll animation is actively ticking. startDieRoll (and its
+  // cosmetic mirror, playRemoteDieAnimation) call render() up to 8 times per roll, ~55ms apart —
+  // pushing the full game state on every single one of those ticks flooded Supabase with rapid,
+  // overlapping updates, which is what caused rolls to visibly stick and the screen to flicker white
+  // between them. The animation itself already reaches the other device separately and immediately
+  // via the lightweight broadcastDieRoll channel; the real game-state push only needs to happen once,
+  // with the FINAL resolved result, right after GS.rollAnim clears.
+  if(ONLINE_GAME && !APPLYING_REMOTE_UPDATE && !(GS && GS.rollAnim)) pushOnlineGameState();
 }
 
 /* ---------------- FAST FORWARD / SIMULATION ---------------- */
@@ -6197,17 +6214,30 @@ function renderRoster(){
         `Locked in by each team's turn through the rotation — no picking in season or playoff games. Today's starters: <b>${TEAMS.away.pitchers[0].name}</b> (${TEAMS.away.nick}) vs <b>${TEAMS.home.pitchers[0].name}</b> (${TEAMS.home.nick})`));
     } else {
       wrap.appendChild(el('div','team-label','Starting Pitchers (Rank)'));
-      const rankRow = el('div','btnrow');
-      const rankLabels = ['Ace','#2','#3','#4'];
-      const maxRank = Math.min(TEAMS.away.rotation.length, TEAMS.home.rotation.length);
-      for(let i=0;i<maxRank;i++){
-        const b = el('button','btn small'+(STARTER_PICK===i?'':' secondary'), rankLabels[i]||`#${i+1}`);
-        b.onclick = ()=>{ STARTER_PICK=i; render(); };
-        rankRow.appendChild(b);
+      // STARTER_PICK is a local-only variable, never synced between devices — for a local (single-
+      // device) game that's fine, since only one person is ever touching it. For an online game with
+      // two separate devices, letting BOTH sides independently click this would race: whichever
+      // device's "Play Ball" click ran last would silently overwrite the other's pick, which is
+      // exactly what caused the starting pitcher to visibly flip mid-setup. Restricting the choice (and
+      // the "Play Ball" trigger below) to the away side's device avoids that race entirely — the away
+      // side's choice, once made, reaches the home side normally through the same state sync as
+      // everything else.
+      const onlineButNotAway = !!ONLINE_GAME && ONLINE_GAME.myTeamKey!=='away';
+      if(onlineButNotAway){
+        wrap.appendChild(el('div','rulesnote', `Waiting for the away side to choose the starting pitchers\u2026 Currently: <b>${TEAMS.away.rotation[STARTER_PICK].name}</b> (${TEAMS.away.nick}) vs <b>${TEAMS.home.rotation[STARTER_PICK].name}</b> (${TEAMS.home.nick})`));
+      } else {
+        const rankRow = el('div','btnrow');
+        const rankLabels = ['Ace','#2','#3','#4'];
+        const maxRank = Math.min(TEAMS.away.rotation.length, TEAMS.home.rotation.length);
+        for(let i=0;i<maxRank;i++){
+          const b = el('button','btn small'+(STARTER_PICK===i?'':' secondary'), rankLabels[i]||`#${i+1}`);
+          b.onclick = ()=>{ STARTER_PICK=i; render(); };
+          rankRow.appendChild(b);
+        }
+        wrap.appendChild(rankRow);
+        wrap.appendChild(el('div','rulesnote',
+          `Today's starters: <b>${TEAMS.away.rotation[STARTER_PICK].name}</b> (${TEAMS.away.nick}) vs <b>${TEAMS.home.rotation[STARTER_PICK].name}</b> (${TEAMS.home.nick})`));
       }
-      wrap.appendChild(rankRow);
-      wrap.appendChild(el('div','rulesnote',
-        `Today's starters: <b>${TEAMS.away.rotation[STARTER_PICK].name}</b> (${TEAMS.away.nick}) vs <b>${TEAMS.home.rotation[STARTER_PICK].name}</b> (${TEAMS.home.nick})`));
     }
   }
 
@@ -6218,6 +6248,11 @@ function renderRoster(){
     const nextBtn = el('button','btn','Next: Home Lineup');
     nextBtn.onclick = ()=>{ ROSTER_STEP='home'; render(); };
     bar.appendChild(nextBtn);
+  } else if(ONLINE_GAME && ONLINE_GAME.myTeamKey!=='away'){
+    // Same race as the starter-rank picker above: only the away side's device actually builds the
+    // final TEAMS/GS and starts the game — this device just waits and receives the result normally
+    // through the existing sync once that happens.
+    bar.appendChild(el('div','rulesnote','Waiting for the away side to start the game\u2026'));
   } else {
     const btn = el('button','btn','Play Ball');
     btn.onclick = ()=>{
