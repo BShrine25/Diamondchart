@@ -493,6 +493,8 @@ function playRemoteDieAnimation(sides, finalRoll, rollingStage){
   if(!GS) return;
   GS.stage = rollingStage; GS.rollAnim = {sides, value: randInt(1,sides)}; render();
   let ticks=0;
+  // Matches startDieRoll's online-specific pacing (5 ticks, 160ms apart) so both devices' animations
+  // run for roughly the same total duration.
   const iv=setInterval(()=>{
     ticks++;
     // The real, authoritative state update for this exact roll can legitimately arrive from the
@@ -501,10 +503,10 @@ function playRemoteDieAnimation(sides, finalRoll, rollingStage){
     // entirely, with rollAnim already cleared. Without checking for that here, the next tick would
     // try to mutate a null rollAnim and throw, which silently kills the interval mid-loop (clearInterval
     // never gets reached) and leaves the screen stuck on whatever last rendered.
-    if(ticks>=8 || !GS || !GS.rollAnim){ clearInterval(iv); if(GS) GS.rollAnim=null; render(); return; }
-    GS.rollAnim.value = (ticks===7) ? finalRoll : randInt(1,sides);
+    if(ticks>=5 || !GS || !GS.rollAnim){ clearInterval(iv); if(GS) GS.rollAnim=null; render(); return; }
+    GS.rollAnim.value = (ticks===4) ? finalRoll : randInt(1,sides);
     render();
-  }, 55);
+  }, 160);
 }
 // Creates a brand-new online game: a live_games row with a freshly generated short join code, this
 // player already seated on whichever side they picked, the other side left open until someone joins.
@@ -3170,6 +3172,27 @@ function isHumanControls(teamKey){
   if(MODE==='pvp') return true;
   return teamKey===HUMAN_SIDE;
 } // Vs Computer: human controls whichever side was picked on the side-select screen. Season/playoff games: controlled per-team by SEASON.humanControlled. Online: controlled per-team by which side THIS device's logged-in player is playing — every decision point in the game already gates on this one function, so this single check is what makes turn-based online play "just work" everywhere (pitching, swinging, stealing, pitching changes, all of it) without touching each of those call sites individually.
+// True only when teamKey belongs to the OTHER real player in an online game — as opposed to a CPU
+// opponent. Every decision-flow render function below has an "if not human-controlled, auto-advance
+// after a short delay" branch, written back when "not human-controlled (on this device)" only ever
+// meant "this is a CPU, safe to fast-forward through automatically." Online play broke that
+// assumption: "not human-controlled on THIS device" is just as often the other real person's team,
+// and racing ahead on a fixed timer without them ever getting a chance to see the result is exactly
+// what made an online game feel like it was "rolling on its own." This distinguishes the two cases.
+function isOnlineOpponentTeam(teamKey){
+  return !!ONLINE_GAME && teamKey!==ONLINE_GAME.myTeamKey;
+}
+// Replaces the old bare "setTimeout(callback, 700)" auto-advance branch used throughout the decision
+// screens below. For a genuine CPU opponent, behaves exactly as before. For an online opponent, shows
+// a waiting message instead of scheduling anything — the real advance will reach this device normally
+// through the state sync once the other player actually makes their own choice on their own device.
+function autoAdvanceOrWait(container, teamKey, callback, waitLabel, delay){
+  if(isOnlineOpponentTeam(teamKey)){
+    container.appendChild(el('div','rulesnote', waitLabel || 'Waiting for the other player\u2026'));
+  } else {
+    setTimeout(callback, delay||700);
+  }
+}
 
 /* ---------------- DIE ANIMATION ---------------- */
 function startDieRoll(sides, rollingStage, onDone){
@@ -3187,13 +3210,20 @@ function startDieRoll(sides, rollingStage, onDone){
   GS.rollAnim = {sides, value: randInt(1,sides)};
   render();
   let ticks=0;
+  // Online games get a slower, coarser animation (fewer, longer ticks) than local play. Each tick's
+  // render() fully clears and rebuilds the DOM — at the normal 55ms pace that's fine on a single
+  // device, but a mobile browser doesn't always finish actually painting one frame before the next
+  // teardown starts, which is what produced the reported white flicker between ticks. Slowing down
+  // is a fine trade for online specifically, matching what was asked for.
+  const tickMs = ONLINE_GAME ? 160 : 55;
+  const totalTicks = ONLINE_GAME ? 5 : 8;
   const iv=setInterval(()=>{
     ticks++;
     // Same defensive check as playRemoteDieAnimation: an out-of-order or delayed remote update could
     // in principle reassign GS mid-animation here too — bail cleanly instead of throwing on a null
     // rollAnim, which would otherwise silently kill the interval and leave the roll stuck on screen.
     if(!GS || !GS.rollAnim){ clearInterval(iv); if(GS) GS.rollAnim=null; onDone(finalRoll); return; }
-    if(ticks>=8){
+    if(ticks>=totalTicks){
       clearInterval(iv);
       GS.rollAnim=null;
       onDone(finalRoll);
@@ -3201,7 +3231,7 @@ function startDieRoll(sides, rollingStage, onDone){
     }
     GS.rollAnim.value = randInt(1,sides);
     render();
-  }, 55);
+  }, tickMs);
 }
 function dieBox(label, value, purple, rolling){
   const box = el('div','diebox');
@@ -6972,7 +7002,7 @@ function renderSwingRolled(m){
   if(isHumanControls(continueOwner)){
     const btn=el('button','btn','Continue'); btn.onclick=nextFn; rz.appendChild(btn);
   } else {
-    setTimeout(nextFn, 700);
+    autoAdvanceOrWait(rz, continueOwner, nextFn, 'Waiting for the other player to continue\u2026');
   }
   m.appendChild(rz);
 }
@@ -6980,15 +7010,19 @@ function renderSwingRolled(m){
 /* ---------------- GENERIC CONTEST RESULT DISPLAY ---------------- */
 function renderContestResult(m){
   const c=GS.contestResult;
+  const tk=battingTeamKey(GS);
   const rz=el('div','rollzone');
   rz.appendChild(el('div','playlabel', c.label));
   const dp=el('div','diepair'); dp.appendChild(dieBox('Roll', c.roll, false, false)); rz.appendChild(dp);
   rz.appendChild(el('div','advline', `${c.defLabel} <b>${c.defValue}</b> + roll <b>${c.roll}</b> = <b>${c.defTotal}</b>  vs  ${c.offLabel} <b>${c.offValue}</b>`));
   rz.appendChild(el('div','outcome-banner '+c.bannerClass, c.bannerText));
   if(c.extraNote){ rz.appendChild(el('div','chartline', c.extraNote)); }
-  const btn=el('button','btn','Continue');
-  btn.onclick=()=>{ GS.contestResult=null; afterPlateAppearance(); };
-  rz.appendChild(btn);
+  const advance = ()=>{ GS.contestResult=null; afterPlateAppearance(); };
+  if(isHumanControls(tk)){
+    const btn=el('button','btn','Continue'); btn.onclick=advance; rz.appendChild(btn);
+  } else {
+    autoAdvanceOrWait(rz, tk, advance, 'Waiting for the other player to continue\u2026');
+  }
   m.appendChild(rz);
 }
 
@@ -7117,7 +7151,7 @@ function renderDPOrForce3Choice(m){
     row.appendChild(dpBtn); row.appendChild(f3Btn);
     dz.appendChild(row);
   } else {
-    setTimeout(()=>{ if(GS && GS.stage==='dp-or-force3-choice'){ initiateDP(); } }, 700); // CPU defaults to the standard double play [SIMPLIFIED]
+    autoAdvanceOrWait(dz, fk, ()=>{ if(GS && GS.stage==='dp-or-force3-choice'){ initiateDP(); } }, 'Waiting for the defense to decide how to play it\u2026');
   }
 }
 
@@ -7159,7 +7193,7 @@ function renderGbUnforcedChoice(m){
     row.appendChild(sendBtn); row.appendChild(holdBtn);
     dz.appendChild(row);
   } else {
-    setTimeout(()=>{ if(GS && GS.stage==='gb-unforced-choice'){ GS.stage='gb-unforced-defense-choice'; render(); } }, 700); // AI always sends [SIMPLIFIED]
+    autoAdvanceOrWait(dz, tk, ()=>{ if(GS && GS.stage==='gb-unforced-choice'){ GS.stage='gb-unforced-defense-choice'; render(); } }, 'Waiting for the offense to decide whether to send the runner\u2026');
   }
 }
 function renderGbUnforcedDefenseChoice(m){
@@ -7175,7 +7209,7 @@ function renderGbUnforcedDefenseChoice(m){
     row.appendChild(concedeBtn); row.appendChild(throwBtn);
     dz.appendChild(row);
   } else {
-    setTimeout(()=>{ if(GS && GS.stage==='gb-unforced-defense-choice'){ resolveGbUnforcedConcede(); } }, 700); // AI always takes the sure out [SIMPLIFIED]
+    autoAdvanceOrWait(dz, fk, ()=>{ if(GS && GS.stage==='gb-unforced-defense-choice'){ resolveGbUnforcedConcede(); } }, 'Waiting for the defense to decide how to play it\u2026');
   }
 }
 // Offense holds: a completely routine groundout, runner stays exactly where they were.
@@ -7290,7 +7324,7 @@ function renderInfieldInGBChoice(m){
     row.appendChild(sendBtn); row.appendChild(holdBtn);
     dz.appendChild(row);
   } else {
-    setTimeout(()=>{ if(GS && GS.stage==='infieldin-gb-choice'){ initiateInfieldInGB(true); } }, 700); // AI always sends [SIMPLIFIED]
+    autoAdvanceOrWait(dz, tk, ()=>{ if(GS && GS.stage==='infieldin-gb-choice'){ initiateInfieldInGB(true); } }, 'Waiting for the offense to decide whether to send the runner\u2026');
   }
 }
 
@@ -7358,7 +7392,7 @@ function renderTagupChoice(m){
     row.appendChild(sendBtn); row.appendChild(holdBtn);
     dz.appendChild(row);
   } else {
-    setTimeout(()=>{ if(GS && GS.stage==='tagup-choice'){ initiateTagUp(true); } }, 700); // AI always sends [SIMPLIFIED]
+    autoAdvanceOrWait(dz, tk, ()=>{ if(GS && GS.stage==='tagup-choice'){ initiateTagUp(true); } }, 'Waiting for the offense to decide whether to send the runner\u2026');
   }
 }
 
@@ -7434,7 +7468,7 @@ function renderExtraBaseChoice(m){
     row.appendChild(sendBtn); row.appendChild(holdBtn);
     dz.appendChild(row);
   } else {
-    setTimeout(()=>{ if(GS && GS.stage==='extrabase-choice'){ answerExtraBaseStep(true); } }, 700); // AI always sends [SIMPLIFIED]
+    autoAdvanceOrWait(dz, tk, ()=>{ if(GS && GS.stage==='extrabase-choice'){ answerExtraBaseStep(true); } }, 'Waiting for the offense to decide whether to send the runner\u2026');
   }
 }
 // Shows the actual matchup before committing to sending this specific runner — the same bonus math
@@ -7659,15 +7693,25 @@ function maybeAutoAdvance(){
   // dp-result, etc.) up to defense-choice, freezing the game on an unacknowledged result forever.
   if(!GS || (GS.gameOver && GS.stage==='defense-choice') || GS.handoff || SCREEN!=='game') return;
   const fk=fieldingTeamKey(GS), tk=battingTeamKey(GS);
+  // This function has no render container of its own to show a "waiting" message in — it's a
+  // background check, not a screen. When the relevant team belongs to the other real player online
+  // (not a CPU), this device has no business auto-advancing anything on their behalf at all; that
+  // player's own device will independently show them the actual pitch/swing controls and progress
+  // things at its own pace once they act. Racing ahead here on a fixed timer regardless of whether a
+  // real person needed to actually see the previous result is exactly what made online games feel
+  // like they were playing themselves.
   if(!isHumanControls(fk) && GS.stage==='defense-choice'){
+    if(isOnlineOpponentTeam(fk)) return;
     setTimeout(()=>{ if(GS && GS.stage==='defense-choice'){ GS.stage='offense-choice'; render(); } }, 300);
     return;
   }
   if(!isHumanControls(tk) && GS.stage==='offense-choice'){
+    if(isOnlineOpponentTeam(tk)) return;
     setTimeout(()=>{ if(GS && GS.stage==='offense-choice'){ doThrowPitch(); } }, 400);
     return;
   }
   if(!isHumanControls(tk) && GS.stage==='pitch-thrown'){
+    if(isOnlineOpponentTeam(tk)) return;
     setTimeout(()=>{ if(GS && GS.stage==='pitch-thrown'){ doRollSwing(); } }, 700);
     return;
   }
