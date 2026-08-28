@@ -453,6 +453,13 @@ function applyRemoteGameState(state){
   if(!state) return;
   APPLYING_REMOTE_UPDATE = true;
   GS = state.gs; TEAMS = state.teams;
+  // SCREEN itself is never part of the synced payload — only GS/TEAMS travel between devices. A
+  // real, non-null GS arriving while this device is still sitting on the roster-setup screen is the
+  // unambiguous signal that the other side just started the game (see the away-only Play Ball gate in
+  // renderRoster) — without this, this device's own GS/TEAMS would silently become correct while the
+  // screen itself stayed stuck showing "waiting for the away side to start the game" forever, since
+  // nothing else was ever checking for that transition to fire.
+  if(GS && SCREEN==='roster') SCREEN='game';
   render();
   APPLYING_REMOTE_UPDATE = false;
 }
