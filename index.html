@@ -678,7 +678,7 @@ function distributeToTwenty(weights){
 // Physical-card convention: outs occupy the low rolls, then BB, then hits ascending
 // in quality, with HR at the very top. Order (not just count) matters here.
 const BATTER_CHART_ORDER = ['SO','GB','FB','BB','1B','2B','3B','HR'];
-const PITCHER_CHART_ORDER = ['SO','GB','FB','LD','BB','1B','2B','HR'];
+const PITCHER_CHART_ORDER = ['SO','GB','LD','FB','BB','1B','2B','HR'];
 // CHART_CAPACITY is the array length we build charts to — deliberately bigger
 // than the current 24-sided Power Die max so future mechanics (strategy cards,
 // etc.) that push the effective roll higher than 24 already have real data to
@@ -837,6 +837,7 @@ function P(name,IP,ERA,H,HR,BB,SO,BF,GS,G,override){
     if(override.points!==undefined) card.points = override.points;
     if(override.chart!==undefined) card.chart = override.chart;
     if(override.role!==undefined) card.role = override.role;
+    if(override.ip!==undefined) card.ip = override.ip;
   }
   return card;
 }
@@ -1447,22 +1448,22 @@ const PIT_BATTERS = [
 ];
 const PIT_PITCHERS = [
   P("Paul Skenes",187.667,1.97,136,11,42,216,733,32,32,{
-    command:4, xZone:1, points:410, role:'SP',
-    chart: chartFromCounts({SO:7,GB:8,FB:2,BB:1,'1B':1,'2B':5,HR:1}, PITCHER_CHART_ORDER)
+    command:4, xZone:1, points:410, role:'SP', ip:5,
+    chart: chartFromCounts({SO:7,GB:5,FB:2,LD:3,BB:1,'1B':1,'2B':5,HR:1}, PITCHER_CHART_ORDER)
   }),
-  Object.assign(P("Mitch Keller",176.333,4.19,171,21,51,150,749,32,32),{points:240,role:'SP',command:2,chart:chartFromCounts({SO:4,GB:9,FB:4,BB:1,'1B':1,'2B':6,HR:1},PITCHER_CHART_ORDER)}),
-  Object.assign(P("Braxton Ashcraft",69.667,2.71,63,3,24,71,292,8,26),{points:310,role:'SP',command:1,chart:chartFromCounts({SO:7,GB:10,FB:2,'2B':5,HR:1},PITCHER_CHART_ORDER)}),
-  Object.assign(P("Mason Montgomery",50,3.90,44,5,19,52,215,0,42),{points:220,role:'RP',command:3,chart:chartFromCounts({SO:10,GB:7,FB:1,BB:1,'1B':1,'2B':5,HR:1},PITCHER_CHART_ORDER)}),
-  cardPitcher("Lake Bachar",'RP',210,{SO:6,GB:9,FB:3,BB:1,'1B':1,'2B':1,HR:1},1,3),
-  cardPitcher("Bubba Chandler",'SP',290,{SO:5,GB:10,FB:3,BB:2,'1B':2,'2B':4,HR:1},5,1),
-  cardPitcher("Camilo Doval",'RP',180,{SO:5,GB:9,FB:2,BB:2,'1B':1,'2B':2,HR:1},1,4),
-  cardPitcher("Jared Jones",'SP',180,{SO:7,GB:9,FB:3,'2B':3,HR:1},4,1),
-  cardPitcher("Yohan Ramirez",'RP',160,{SO:7,GB:8,FB:3,BB:8,HR:1},1,1),
-  cardPitcher("Carmen Mlodzinski",'RP',300,{SO:4,GB:8,FB:4,BB:1,'1B':2,'2B':7,HR:1},3,4),
-  cardPitcher("Gregory Soto",'RP',220,{SO:7,GB:9,FB:1,BB:2,'1B':1,'2B':4,HR:1},1,4),
-  cardPitcher("Evan Sisk",'RP',140,{SO:8,GB:10,FB:0,BB:2,'1B':2,'2B':4,HR:1},1,1),
-  cardPitcher("Luke Weaver",'RP',290,{SO:6,GB:8,FB:3,BB:1,'1B':5,'2B':1,HR:1},1,6),
-  cardPitcher("Kirby Yates",'RP',210,{SO:7,GB:6,FB:4,BB:2,'2B':6,HR:1},1,4),
+  Object.assign(P("Mitch Keller",176.333,4.19,171,21,51,150,749,32,32),{points:240,role:'SP',command:2,ip:5,chart:chartFromCounts({SO:4,GB:7,FB:4,LD:2,BB:1,'1B':1,'2B':6,HR:1},PITCHER_CHART_ORDER)}),
+  Object.assign(P("Braxton Ashcraft",69.667,2.71,63,3,24,71,292,8,26),{points:310,role:'SP',command:1,ip:6,chart:chartFromCounts({SO:7,GB:7,FB:2,LD:3,'2B':5,HR:1},PITCHER_CHART_ORDER)}),
+  Object.assign(P("Mason Montgomery",50,3.90,44,5,19,52,215,0,42),{points:220,role:'RP',command:3,ip:1,chart:chartFromCounts({SO:10,GB:6,FB:1,LD:1,BB:1,'1B':1,'2B':5,HR:1},PITCHER_CHART_ORDER)}),
+  cardPitcher("Lake Bachar",'RP',210,{SO:6,GB:6,FB:3,LD:3,BB:1,'1B':1,'2B':1,HR:1},1,3),
+  cardPitcher("Bubba Chandler",'SP',290,{SO:5,GB:6,FB:3,LD:4,BB:2,'1B':2,'2B':4,HR:1},5,1),
+  cardPitcher("Camilo Doval",'RP',180,{SO:5,GB:7,FB:2,LD:2,BB:2,'1B':1,'2B':2,HR:1},1,4),
+  cardPitcher("Jared Jones",'SP',180,{SO:7,GB:5,FB:3,LD:4,'2B':3,HR:1},4,1),
+  cardPitcher("Yohan Ramirez",'RP',160,{SO:7,GB:6,FB:3,LD:2,BB:8,HR:1},1,1),
+  cardPitcher("Carmen Mlodzinski",'RP',300,{SO:4,GB:6,FB:4,LD:2,BB:1,'1B':2,'2B':7,HR:1},3,4),
+  cardPitcher("Gregory Soto",'RP',220,{SO:7,GB:5,FB:1,LD:4,BB:2,'1B':1,'2B':4,HR:1},1,4),
+  cardPitcher("Evan Sisk",'RP',140,{SO:8,GB:5,FB:0,LD:5,BB:2,'1B':2,'2B':4,HR:1},1,1),
+  cardPitcher("Luke Weaver",'RP',290,{SO:6,GB:5,FB:3,LD:3,BB:1,'1B':5,'2B':1,HR:1},1,6),
+  cardPitcher("Kirby Yates",'RP',210,{SO:7,GB:4,FB:4,LD:2,BB:2,'2B':6,HR:1},1,4),
 ];
 
 
@@ -1484,19 +1485,19 @@ const CLE_BATTERS = [
   cardBatter("Nathaniel Lowe",["1B"],310,8,{SO:1,GB:1,FB:1,BB:4,'1B':7,'2B':3,HR:7},9,{'1B':0}),
 ];
 const CLE_PITCHERS = [
-  Object.assign(P("Tanner Bibee",182.333,4.24,170,27,54,162,762,31,31),{points:430,role:'SP',command:4,chart:chartFromCounts({SO:4,GB:9,FB:4,BB:1,'1B':1,'2B':1,HR:1},PITCHER_CHART_ORDER)}),
-  Object.assign(P("Gavin Williams",167.667,3.06,130,23,83,173,704,31,31),{points:500,role:'SP',command:5,chart:chartFromCounts({SO:8,GB:7,FB:2,BB:1,'1B':1,'2B':1,HR:1},PITCHER_CHART_ORDER)}),
-  Object.assign(P("Slade Cecconi",132,4.30,125,24,32,109,545,23,23),{points:190,role:'SP',command:2,chart:chartFromCounts({SO:4,GB:9,FB:4,'1B':2,'2B':4,HR:1},PITCHER_CHART_ORDER)}),
-  Object.assign(P("Cade Smith",73.667,2.93,55,4,19,104,300,0,76),{points:190,role:'RP',command:1,chart:chartFromCounts({SO:10,GB:8,FB:2,BB:2,'2B':3,HR:1},PITCHER_CHART_ORDER)}),
-  Object.assign(P("Hunter Gaddis",66.667,3.11,58,8,21,73,274,0,73),{points:130,role:'RP',command:1,chart:chartFromCounts({SO:5,GB:9,FB:4,BB:1,'1B':2,'2B':5,HR:1},PITCHER_CHART_ORDER)}),
-  Object.assign(P("Craig Yoho",35,3.60,30,3,15,38,150,0,35),{points:220,role:'RP',chart:chartFromCounts({SO:5,GB:7,FB:4,BB:3,'2B':1,HR:1},PITCHER_CHART_ORDER)}),
-  cardPitcher("Joey Cantillo",'SP',220,{SO:6,GB:7,FB:4,BB:1,'1B':1,'2B':6,HR:1},5,2),
-  cardPitcher("Matt Festa",'RP',130,{SO:6,GB:9,FB:1,BB:1,'1B':2,'2B':5,HR:1},1,3),
-  cardPitcher("Foster Griffin",'SP',430,{SO:5,GB:8,FB:4,BB:1,'1B':1,'2B':1,HR:1},6,4),
-  cardPitcher("Parker Messick",'SP',510,{SO:6,GB:10,FB:1,BB:1,'1B':1,'2B':4,HR:1},6,5),
-  cardPitcher("Colin Holderman",'RP',290,{SO:6,GB:9,FB:2,BB:2,'1B':6,'2B':1},1,5),
-  cardPitcher("Tim Herrin",'RP',100,{SO:5,GB:10,FB:2,BB:3,'1B':2,'2B':4,HR:1},1,1),
-  cardPitcher("Erik Sabrowski",'RP',140,{SO:10,GB:4,FB:2,BB:3,'1B':1,'2B':6,HR:1},1,3),
+  Object.assign(P("Tanner Bibee",182.333,4.24,170,27,54,162,762,31,31),{points:430,role:'SP',command:4,ip:6,chart:chartFromCounts({SO:4,GB:6,FB:4,LD:3,BB:1,'1B':1,'2B':1,HR:1},PITCHER_CHART_ORDER)}),
+  Object.assign(P("Gavin Williams",167.667,3.06,130,23,83,173,704,31,31),{points:500,role:'SP',command:5,ip:6,chart:chartFromCounts({SO:8,GB:5,FB:2,LD:2,BB:1,'1B':1,'2B':1,HR:1},PITCHER_CHART_ORDER)}),
+  Object.assign(P("Slade Cecconi",132,4.30,125,24,32,109,545,23,23),{points:190,role:'SP',command:2,ip:5,chart:chartFromCounts({SO:4,GB:7,FB:4,LD:2,'1B':2,'2B':4,HR:1},PITCHER_CHART_ORDER)}),
+  Object.assign(P("Cade Smith",73.667,2.93,55,4,19,104,300,0,76),{points:190,role:'RP',command:1,ip:1,chart:chartFromCounts({SO:10,GB:5,FB:2,LD:3,BB:2,'2B':3,HR:1},PITCHER_CHART_ORDER)}),
+  Object.assign(P("Hunter Gaddis",66.667,3.11,58,8,21,73,274,0,73),{points:130,role:'RP',command:1,ip:1,chart:chartFromCounts({SO:5,GB:5,FB:4,LD:4,BB:1,'1B':2,'2B':5,HR:1},PITCHER_CHART_ORDER)}),
+  Object.assign(P("Craig Yoho",35,3.60,30,3,15,38,150,0,35),{points:220,role:'RP',ip:1,chart:chartFromCounts({SO:5,GB:6,FB:4,LD:1,BB:3,'2B':1,HR:1},PITCHER_CHART_ORDER)}),
+  cardPitcher("Joey Cantillo",'SP',220,{SO:6,GB:5,FB:4,LD:2,BB:1,'1B':1,'2B':6,HR:1},5,2),
+  cardPitcher("Matt Festa",'RP',130,{SO:6,GB:5,FB:1,LD:4,BB:1,'1B':2,'2B':5,HR:1},1,3),
+  cardPitcher("Foster Griffin",'SP',430,{SO:5,GB:6,FB:4,LD:2,BB:1,'1B':1,'2B':1,HR:1},6,4),
+  cardPitcher("Parker Messick",'SP',510,{SO:6,GB:6,FB:1,LD:4,BB:1,'1B':1,'2B':4,HR:1},6,5),
+  cardPitcher("Colin Holderman",'RP',290,{SO:6,GB:7,FB:2,LD:2,BB:2,'1B':6,'2B':1},1,5),
+  cardPitcher("Tim Herrin",'RP',100,{SO:5,GB:6,FB:2,LD:4,BB:3,'1B':2,'2B':4,HR:1},1,1),
+  cardPitcher("Erik Sabrowski",'RP',140,{SO:10,GB:1,FB:2,LD:3,BB:3,'1B':1,'2B':6,HR:1},1,3),
 ];
 
 const PHI_BATTERS = [
@@ -1515,22 +1516,22 @@ const PHI_BATTERS = [
   cardBatter("Derek Hill",["LF","CF","RF"],250,22,{SO:2,GB:1,FB:2,BB:2,'1B':9,HR:8},8,{LF:2,CF:2,RF:2}),
 ];
 const PHI_PITCHERS = [
-  Object.assign(P("Cristopher Sanchez",202,2.50,171,12,44,212,807,32,32),{points:390,role:'SP',command:2,chart:chartFromCounts({SO:7,GB:9,FB:2,'1B':2,'2B':6,HR:1},PITCHER_CHART_ORDER)}),
-  Object.assign(P("Jesus Luzardo",183.667,3.92,167,16,57,216,758,32,32),{points:470,role:'SP',command:5,chart:chartFromCounts({SO:7,GB:7,FB:2,BB:1,'1B':3,'2B':4,HR:1},PITCHER_CHART_ORDER)}),
-  Object.assign(P("Zack Wheeler",149.667,2.71,107,19,33,195,585,24,24),{points:500,role:'SP',command:5,chart:chartFromCounts({SO:7,GB:8,FB:2,BB:1,'1B':1,'2B':2,HR:1},PITCHER_CHART_ORDER)}),
-  Object.assign(P("Jhoan Duran",20.667,2.18,18,2,1,27,81,0,23),{points:270,role:'RP',command:5,chart:chartFromCounts({SO:9,GB:7,FB:1,BB:1,'1B':5,'2B':3,HR:1},PITCHER_CHART_ORDER)}),
-  Object.assign(P("Tanner Banks",67.333,3.07,56,9,12,61,267,0,69),{points:100,role:'RP',command:1,chart:chartFromCounts({SO:6,GB:9,FB:2,BB:3,'1B':2,'2B':4,HR:1},PITCHER_CHART_ORDER)}),
-  Object.assign(P("Orion Kerkering",60,3.30,55,6,27,65,266,0,69),{points:190,role:'RP',command:4,chart:chartFromCounts({SO:6,GB:7,FB:3,BB:3,'2B':7,HR:1},PITCHER_CHART_ORDER)}),
-  Object.assign(P("Jose Alvarado",26,3.81,27,4,7,32,114,0,28),{points:60,role:'RP',command:1,chart:chartFromCounts({SO:8,GB:7,FB:2,BB:2,'2B':7,HR:1},PITCHER_CHART_ORDER)}),
-  cardPitcher("Kyle Backhus",'RP',70,{SO:5,GB:7,FB:4,'1B':4,'2B':4,HR:1},1,2),
-  cardPitcher("Jonathan Bowlan",'RP',210,{SO:9,GB:9,FB:3,HR:1},1,1),
-  cardPitcher("Brad Keller",'RP',130,{SO:6,GB:7,FB:5,BB:1,'1B':4,'2B':3,HR:1},1,1),
-  cardPitcher("Caleb Kilian",'RP',180,{SO:7,GB:8,FB:2,BB:1,'1B':6,HR:1},1,3),
-  cardPitcher("Aaron Nola",'SP',150,{SO:6,GB:8,FB:3,'1B':2,'2B':1,HR:1},5,2),
-  cardPitcher("Tim Mayza",'RP',200,{SO:6,GB:8,FB:4,'1B':1,'2B':7,HR:1},1,3),
-  cardPitcher("Brooks Raley",'RP',210,{SO:6,GB:8,FB:3,BB:1,'1B':2,'2B':6,HR:1},1,4),
-  cardPitcher("Andrew Painter",'SP',60,{SO:5,GB:9,FB:3,BB:1,'1B':1,'2B':3,HR:1},5,1),
-  cardPitcher("Chase Shugart",'RP',100,{SO:7,GB:7,FB:3,BB:1,'1B':1,'2B':1,HR:1},1,2),
+  Object.assign(P("Cristopher Sanchez",202,2.50,171,12,44,212,807,32,32),{points:390,role:'SP',command:2,ip:6,chart:chartFromCounts({SO:7,GB:8,FB:2,LD:1,'1B':2,'2B':6,HR:1},PITCHER_CHART_ORDER)}),
+  Object.assign(P("Jesus Luzardo",183.667,3.92,167,16,57,216,758,32,32),{points:470,role:'SP',command:5,ip:6,chart:chartFromCounts({SO:7,GB:6,FB:2,LD:1,BB:1,'1B':3,'2B':4,HR:1},PITCHER_CHART_ORDER)}),
+  Object.assign(P("Zack Wheeler",149.667,2.71,107,19,33,195,585,24,24),{points:500,role:'SP',command:5,ip:6,chart:chartFromCounts({SO:7,GB:5,FB:2,LD:3,BB:1,'1B':1,'2B':2,HR:1},PITCHER_CHART_ORDER)}),
+  Object.assign(P("Jhoan Duran",20.667,2.18,18,2,1,27,81,0,23),{points:270,role:'RP',command:5,ip:1,chart:chartFromCounts({SO:9,GB:6,FB:1,LD:1,BB:1,'1B':5,'2B':3,HR:1},PITCHER_CHART_ORDER)}),
+  Object.assign(P("Tanner Banks",67.333,3.07,56,9,12,61,267,0,69),{points:100,role:'RP',command:1,ip:1,chart:chartFromCounts({SO:6,GB:5,FB:2,LD:4,BB:3,'1B':2,'2B':4,HR:1},PITCHER_CHART_ORDER)}),
+  Object.assign(P("Orion Kerkering",60,3.30,55,6,27,65,266,0,69),{points:190,role:'RP',command:4,ip:1,chart:chartFromCounts({SO:6,GB:4,FB:3,LD:3,BB:3,'2B':7,HR:1},PITCHER_CHART_ORDER)}),
+  Object.assign(P("Jose Alvarado",26,3.81,27,4,7,32,114,0,28),{points:60,role:'RP',command:1,ip:1,chart:chartFromCounts({SO:8,GB:4,FB:2,LD:3,BB:2,'2B':7,HR:1},PITCHER_CHART_ORDER)}),
+  cardPitcher("Kyle Backhus",'RP',70,{SO:5,GB:6,FB:4,LD:1,'1B':4,'2B':4,HR:1},1,2),
+  cardPitcher("Jonathan Bowlan",'RP',210,{SO:9,GB:7,FB:3,LD:2,HR:1},1,1),
+  cardPitcher("Brad Keller",'RP',130,{SO:6,GB:6,FB:5,LD:1,BB:1,'1B':4,'2B':3,HR:1},1,1),
+  cardPitcher("Caleb Kilian",'RP',180,{SO:7,GB:6,FB:2,LD:2,BB:1,'1B':6,HR:1},1,3),
+  cardPitcher("Aaron Nola",'SP',150,{SO:6,GB:6,FB:3,LD:2,'1B':2,'2B':1,HR:1},5,2),
+  cardPitcher("Tim Mayza",'RP',200,{SO:6,GB:7,FB:4,LD:1,'1B':1,'2B':7,HR:1},1,3),
+  cardPitcher("Brooks Raley",'RP',210,{SO:6,GB:5,FB:3,LD:3,BB:1,'1B':2,'2B':6,HR:1},1,4),
+  cardPitcher("Andrew Painter",'SP',60,{SO:5,GB:5,FB:3,LD:4,BB:1,'1B':1,'2B':3,HR:1},5,1),
+  cardPitcher("Chase Shugart",'RP',100,{SO:7,GB:5,FB:3,LD:2,BB:1,'1B':1,'2B':1,HR:1},1,2),
 ];
 
 const NYY_BATTERS = [
@@ -1555,19 +1556,19 @@ const NYY_BATTERS = [
   cardBatter("Ali Sanchez",["C"],140,8,{SO:2,GB:2,FB:2,'1B':12,'2B':1,HR:5},9,{C:7}),
 ];
 const NYY_PITCHERS = [
-  Object.assign(P("Max Fried",185,3.30,175,15,45,170,780,30,30),{points:620,role:'SP',command:6,chart:chartFromCounts({SO:5,GB:9,FB:3,BB:1,'1B':2,'2B':6,HR:1},PITCHER_CHART_ORDER)}),
-  Object.assign(P("Carlos Rodon",175,3.60,150,20,55,190,720,30,30),{points:390,role:'SP',command:2,chart:chartFromCounts({SO:7,GB:7,FB:4,BB:3,'1B':2,'2B':3,HR:1},PITCHER_CHART_ORDER)}),
-  Object.assign(P("Cam Schlittler",70,3.20,55,6,25,75,290,12,12),{points:580,role:'SP',command:6,chart:chartFromCounts({SO:7,GB:7,FB:3,BB:1,'1B':1,'2B':4,HR:1},PITCHER_CHART_ORDER)}),
-  cardPitcher("Angel Chivilli",'RP',160,{SO:5,GB:7,FB:6,BB:1,'2B':1,HR:1},1,2),
-  cardPitcher("Paul Blackburn",'RP',230,{SO:5,GB:11,FB:3,BB:1,'1B':2,'2B':4,HR:1},1,2),
-  cardPitcher("David Bednar",'RP',220,{SO:7,GB:12,BB:1,'1B':2,'2B':4,HR:1},1,2),
-  cardPitcher("Fernando Cruz",'RP',140,{SO:8,GB:9,FB:1,BB:5,'1B':2,'2B':1,HR:1},1,1),
-  cardPitcher("Gerrit Cole",'SP',390,{SO:7,GB:9,FB:3,'2B':4,HR:1},6,2),
-  cardPitcher("Tim Hill",'RP',200,{SO:2,GB:13,FB:2,BB:1,'1B':1,'2B':1,HR:1},1,3),
-  cardPitcher("Brent Headrick",'RP',210,{SO:7,GB:6,FB:4,BB:1,'1B':2,'2B':6,HR:1},1,4),
-  cardPitcher("Will Warren",'SP',180,{SO:6,GB:9,FB:3,'1B':1,'2B':7,HR:1},5,1),
-  cardPitcher("Ryan Weathers",'SP',330,{SO:7,GB:9,FB:2,'1B':1,'2B':4,HR:1},6,2),
-  cardPitcher("Ryan Yarbrough",'RP',230,{SO:3,GB:10,FB:3,BB:2,'1B':2,'2B':6,HR:1},2,4),
+  Object.assign(P("Max Fried",185,3.30,175,15,45,170,780,30,30),{points:620,role:'SP',command:6,ip:6,chart:chartFromCounts({SO:5,GB:6,FB:3,LD:3,BB:1,'1B':2,'2B':6,HR:1},PITCHER_CHART_ORDER)}),
+  Object.assign(P("Carlos Rodon",175,3.60,150,20,55,190,720,30,30),{points:390,role:'SP',command:2,ip:5,chart:chartFromCounts({SO:7,GB:5,FB:4,LD:2,BB:3,'1B':2,'2B':3,HR:1},PITCHER_CHART_ORDER)}),
+  Object.assign(P("Cam Schlittler",70,3.20,55,6,25,75,290,12,12),{points:580,role:'SP',command:6,ip:6,chart:chartFromCounts({SO:7,GB:5,FB:3,LD:2,BB:1,'1B':1,'2B':4,HR:1},PITCHER_CHART_ORDER)}),
+  cardPitcher("Angel Chivilli",'RP',160,{SO:5,GB:6,FB:6,LD:1,BB:1,'2B':1,HR:1},1,2),
+  cardPitcher("Paul Blackburn",'RP',230,{SO:5,GB:10,FB:3,LD:1,BB:1,'1B':2,'2B':4,HR:1},1,2),
+  cardPitcher("David Bednar",'RP',220,{SO:7,GB:8,FB:0,LD:4,BB:1,'1B':2,'2B':4,HR:1},1,2),
+  cardPitcher("Fernando Cruz",'RP',140,{SO:8,GB:4,FB:1,LD:5,BB:5,'1B':2,'2B':1,HR:1},1,1),
+  cardPitcher("Gerrit Cole",'SP',390,{SO:7,GB:5,FB:3,LD:4,'2B':4,HR:1},6,2),
+  cardPitcher("Tim Hill",'RP',200,{SO:2,GB:12,FB:2,LD:1,BB:1,'1B':1,'2B':1,HR:1},1,3),
+  cardPitcher("Brent Headrick",'RP',210,{SO:7,GB:4,FB:4,LD:2,BB:1,'1B':2,'2B':6,HR:1},1,4),
+  cardPitcher("Will Warren",'SP',180,{SO:6,GB:7,FB:3,LD:2,'1B':1,'2B':7,HR:1},5,1),
+  cardPitcher("Ryan Weathers",'SP',330,{SO:7,GB:7,FB:2,LD:2,'1B':1,'2B':4,HR:1},6,2),
+  cardPitcher("Ryan Yarbrough",'RP',230,{SO:3,GB:5,FB:3,LD:5,BB:2,'1B':2,'2B':6,HR:1},2,4),
 ];
 
 const ATL_BATTERS = [
@@ -1584,20 +1585,20 @@ const ATL_BATTERS = [
   cardBatter("Lane Thomas",["LF","CF","RF"],200,17,{SO:1,GB:1,FB:2,BB:6,'1B':5,'2B':3,HR:1},9,{LF:0,CF:0,RF:0}),
 ];
 const ATL_PITCHERS = [
-  cardPitcher("Bryce Elder",'SP',310,{SO:5,GB:11,FB:3,'2B':4,HR:1},6,1),
-  cardPitcher("Didier Fuentes",'RP',240,{SO:7,GB:6,FB:4,BB:1,'1B':2,'2B':6,HR:1},1,5),
-  cardPitcher("Dylan Dodd",'RP',270,{SO:7,GB:9,FB:2,BB:1,'2B':3,HR:1},1,5),
-  cardPitcher("Grant Holmes",'SP',330,{SO:4,GB:8,FB:5,BB:1,'1B':1,'2B':2,HR:1},5,3),
-  cardPitcher("Raisel Iglesias",'RP',200,{SO:6,GB:8,FB:3,BB:1,'1B':1,'2B':4,HR:1},1,4),
-  cardPitcher("Reynaldo Lopez",'SP',260,{SO:5,GB:8,FB:4,BB:1,'1B':1,'2B':4,HR:1},4,3),
-  cardPitcher("Tyler Kinley",'RP',150,{SO:6,GB:8,FB:4,BB:1,'2B':1,HR:1},1,2),
-  cardPitcher("Dylan Lee",'RP',270,{SO:9,GB:8,FB:3,BB:2,'2B':3,HR:1},1,3),
-  cardPitcher("Tyler Mahle",'SP',200,{SO:6,GB:9,FB:3,'1B':2,'2B':4,HR:1},5,1),
-  cardPitcher("Martin Perez",'SP',450,{SO:4,GB:9,FB:4,BB:1,'1B':2,'2B':4,HR:1},5,4),
-  cardPitcher("JR Ritchie",'SP',340,{SO:5,GB:8,FB:3,BB:3,'1B':1,'2B':2,HR:1},5,3),
-  cardPitcher("Brent Suter",'RP',210,{SO:5,GB:10,FB:2,'1B':2,'2B':6,HR:1},2,3),
-  cardPitcher("Robert Suarez",'RP',300,{SO:5,GB:10,FB:3,'1B':8,HR:1},1,5),
-  cardPitcher("Chris Sale",'SP',530,{SO:7,GB:7,FB:2,BB:1,'1B':4,'2B':4,HR:1},6,6),
+  cardPitcher("Bryce Elder",'SP',310,{SO:5,GB:8,LD:3,FB:3,'2B':4,HR:1},6,1),
+  cardPitcher("Didier Fuentes",'RP',240,{SO:7,GB:3,LD:3,FB:4,BB:1,'1B':2,'2B':6,HR:1},1,5),
+  cardPitcher("Dylan Dodd",'RP',270,{SO:7,GB:4,LD:5,FB:2,BB:1,'2B':3,HR:1},1,5),
+  cardPitcher("Grant Holmes",'SP',330,{SO:4,GB:6,LD:2,FB:5,BB:1,'1B':1,'2B':2,HR:1},5,3),
+  cardPitcher("Raisel Iglesias",'RP',200,{SO:6,GB:5,LD:3,FB:3,BB:1,'1B':1,'2B':4,HR:1},1,4),
+  cardPitcher("Reynaldo Lopez",'SP',260,{SO:5,GB:5,LD:3,FB:4,BB:1,'1B':1,'2B':4,HR:1},4,3),
+  cardPitcher("Tyler Kinley",'RP',150,{SO:6,GB:4,LD:4,FB:4,BB:1,'2B':1,HR:1},1,2),
+  cardPitcher("Dylan Lee",'RP',270,{SO:9,GB:5,LD:3,FB:3,BB:2,'2B':3,HR:1},1,3),
+  cardPitcher("Tyler Mahle",'SP',200,{SO:6,GB:7,LD:2,FB:3,'1B':2,'2B':4,HR:1},5,1),
+  cardPitcher("Martin Perez",'SP',450,{SO:4,GB:7,LD:2,FB:4,BB:1,'1B':2,'2B':4,HR:1},5,4),
+  cardPitcher("JR Ritchie",'SP',340,{SO:5,GB:6,LD:2,FB:3,BB:3,'1B':1,'2B':2,HR:1},5,3),
+  cardPitcher("Brent Suter",'RP',210,{SO:5,GB:8,LD:2,FB:2,'1B':2,'2B':6,HR:1},2,3),
+  cardPitcher("Robert Suarez",'RP',300,{SO:5,GB:7,LD:3,FB:3,'1B':8,HR:1},1,5),
+  cardPitcher("Chris Sale",'SP',530,{SO:7,GB:5,LD:2,FB:2,BB:1,'1B':4,'2B':4,HR:1},6,6),
 ];
 
 const MIA_BATTERS = [
@@ -1616,21 +1617,21 @@ const MIA_BATTERS = [
   cardBatter("Heriberto Hernandez",["LF","RF"],280,16,{SO:2,GB:2,FB:2,BB:4,'1B':4,'2B':2,HR:1},9,{LF:1,RF:1}),
 ];
 const MIA_PITCHERS = [
-  cardPitcher("Sandy Alcantara",'SP',380,{SO:5,GB:11,FB:2,'1B':2,'2B':6,HR:1},6,2),
+  cardPitcher("Sandy Alcantara",'SP',380,{SO:5,GB:7,LD:4,FB:2,'1B':2,'2B':6,HR:1},6,2),
   cardPitcher("Calvin Faucher",'RP',170,{SO:7,GB:7,FB:3,BB:3,'1B':2,'2B':4,HR:1},1,2),
-  cardPitcher("Pete Fairbanks",'RP',80,{SO:9,GB:6,FB:3,BB:1,'2B':1,HR:1},1,1),
-  cardPitcher("Anthony Bender",'RP',270,{SO:7,GB:6,FB:5,BB:2,'1B':2,'2B':4,HR:1},1,4),
-  cardPitcher("Janson Junk",'SP',310,{SO:4,GB:12,FB:1,'1B':2,'2B':4,HR:1},5,3),
-  cardPitcher("Ryan Gusto",'SP',250,{SO:5,GB:9,FB:3,'1B':2,'2B':5,HR:1},4,3),
-  cardPitcher("Cade Gibson",'RP',70,{SO:4,GB:8,FB:5,BB:2,'2B':7,HR:1},1,1),
-  cardPitcher("John King",'RP',250,{SO:4,GB:9,FB:5,BB:1,'2B':3,HR:1},1,4),
-  cardPitcher("Max Meyer",'SP',460,{SO:6,GB:8,FB:3,BB:1,'1B':2,'2B':4,HR:1},6,4),
-  cardPitcher("Andrew Nardi",'RP',90,{SO:7,GB:6,FB:5,BB:1,'2B':3,HR:1},1,1),
-  cardPitcher("Tyler Phillips",'SP',200,{SO:4,GB:9,FB:5,BB:1,'1B':1,'2B':6,HR:1},4,1),
-  cardPitcher("Michael Petersen",'RP',250,{SO:7,GB:9,FB:1,BB:2,'2B':5,HR:1},1,5),
-  cardPitcher("Eury Perez",'SP',460,{SO:7,GB:9,FB:1,BB:2,'2B':4,HR:1},6,4),
-  cardPitcher("Victor Vodnik",'RP',80,{SO:4,GB:9,FB:4,BB:2,'2B':7,HR:1},1,1),
-  cardPitcher("Tyler Zuber",'RP',160,{SO:7,GB:7,FB:3,'1B':2,'2B':1,HR:1},1,3),
+  cardPitcher("Pete Fairbanks",'RP',80,{SO:9,GB:2,LD:4,FB:3,BB:1,'2B':1,HR:1},1,1),
+  cardPitcher("Anthony Bender",'RP',270,{SO:7,GB:5,LD:1,FB:5,BB:2,'1B':2,'2B':4,HR:1},1,4),
+  cardPitcher("Janson Junk",'SP',310,{SO:4,GB:7,LD:5,FB:1,'1B':2,'2B':4,HR:1},5,3),
+  cardPitcher("Ryan Gusto",'SP',250,{SO:5,GB:7,LD:2,FB:3,'1B':2,'2B':5,HR:1},4,3),
+  cardPitcher("Cade Gibson",'RP',70,{SO:4,GB:7,LD:1,FB:5,BB:2,'2B':7,HR:1},1,1),
+  cardPitcher("John King",'RP',250,{SO:4,GB:7,LD:2,FB:5,BB:1,'2B':3,HR:1},1,4),
+  cardPitcher("Max Meyer",'SP',460,{SO:6,GB:5,LD:3,FB:3,BB:1,'1B':2,'2B':4,HR:1},6,4),
+  cardPitcher("Andrew Nardi",'RP',90,{SO:7,GB:5,LD:1,FB:5,BB:1,'2B':3,HR:1},1,1),
+  cardPitcher("Tyler Phillips",'SP',200,{SO:4,GB:8,LD:1,FB:5,BB:1,'1B':1,'2B':6,HR:1},4,1),
+  cardPitcher("Michael Petersen",'RP',250,{SO:7,GB:4,LD:5,FB:1,BB:2,'2B':5,HR:1},1,5),
+  cardPitcher("Eury Perez",'SP',460,{SO:7,GB:5,LD:4,FB:1,BB:2,'2B':4,HR:1},6,4),
+  cardPitcher("Victor Vodnik",'RP',80,{SO:4,GB:8,LD:1,FB:4,BB:2,'2B':7,HR:1},1,1),
+  cardPitcher("Tyler Zuber",'RP',160,{SO:7,GB:6,LD:1,FB:3,'1B':2,'2B':1,HR:1},1,3),
 ];
 
 const WSH_BATTERS = [
@@ -1648,22 +1649,22 @@ const WSH_BATTERS = [
   cardBatter("Jacob Young",["CF","LF","RF"],240,19,{SO:1,GB:2,FB:2,BB:3,'1B':8,'2B':2,'3B':1,HR:1},9,{CF:4,LF:2,RF:2}),
 ];
 const WSH_PITCHERS = [
-  cardPitcher("Clayton Beeter",'RP',200,{SO:6,GB:7,FB:3,BB:3,'1B':1,HR:1},1,3),
-  cardPitcher("Andrew Alvarez",'SP',330,{SO:5,GB:8,FB:3,BB:2,'1B':2,'2B':6,HR:1},5,3),
-  cardPitcher("Cade Cavalli",'SP',220,{SO:7,GB:9,FB:2,'1B':2,'2B':6,HR:1},5,1),
-  cardPitcher("Will Dion",'RP',180,{SO:7,GB:7,FB:3,'1B':2,'2B':1,HR:1},2,3),
-  cardPitcher("Riley Cornelio",'RP',190,{SO:5,GB:5,FB:4,BB:4,'1B':2,'2B':6,HR:1},2,5),
-  cardPitcher("Jake Bird",'RP',160,{SO:5,GB:6,FB:3,BB:2,'1B':3,'2B':1,HR:1},1,6),
-  cardPitcher("Connelly Early",'SP',330,{SO:6,GB:8,FB:3,BB:1,'1B':1,'2B':2,HR:1},5,3),
-  cardPitcher("Jake Irvin",'SP',180,{SO:6,GB:8,FB:4,BB:1,'2B':4,HR:1},5,1),
-  cardPitcher("Brad Lord",'RP',230,{SO:5,GB:11,FB:2,BB:1,'1B':3,'2B':4,HR:1},2,2),
-  cardPitcher("Richard Lovelady",'RP',80,{SO:4,GB:6,FB:4,BB:3,'1B':2,'2B':4,HR:1},1,4),
-  cardPitcher("Carson Palmquist",'SP',140,{SO:4,GB:5,FB:4,BB:3,'1B':3,'2B':7,HR:1},4,6),
-  cardPitcher("Mitchell Parker",'RP',100,{SO:5,GB:8,FB:4,'1B':2,'2B':1,HR:1},2,2),
-  cardPitcher("Paxton Schultz",'RP',150,{SO:5,GB:5,FB:4,BB:1,'1B':4,'2B':2,HR:1},1,6),
-  cardPitcher("Orlando Ribalta",'RP',210,{SO:5,GB:10,FB:2,BB:1,'1B':2,'2B':3,HR:1},1,4),
-  cardPitcher("PJ Poulin",'RP',210,{SO:4,GB:10,FB:2,BB:3,'2B':5,HR:1},1,4),
-  cardPitcher("Gus Varland",'RP',10,{SO:5,GB:7,FB:4,BB:1,'2B':3,HR:1},1,1),
+  cardPitcher("Clayton Beeter",'RP',200,{SO:6,GB:7,LD:1,FB:3,BB:3,'1B':1,HR:1},1,3),
+  cardPitcher("Andrew Alvarez",'SP',330,{SO:5,GB:7,LD:1,FB:3,BB:2,'1B':2,'2B':6,HR:1},5,3),
+  cardPitcher("Cade Cavalli",'SP',220,{SO:7,GB:8,LD:1,FB:2,'1B':2,'2B':6,HR:1},5,1),
+  cardPitcher("Will Dion",'RP',180,{SO:7,GB:5,LD:2,FB:3,'1B':2,'2B':1,HR:1},2,3),
+  cardPitcher("Riley Cornelio",'RP',190,{SO:5,GB:3,LD:2,FB:4,BB:4,'1B':2,'2B':6,HR:1},2,5),
+  cardPitcher("Jake Bird",'RP',160,{SO:5,GB:4,LD:2,FB:3,BB:2,'1B':3,'2B':1,HR:1},1,6),
+  cardPitcher("Connelly Early",'SP',330,{SO:6,GB:6,LD:2,FB:3,BB:1,'1B':1,'2B':2,HR:1},5,3),
+  cardPitcher("Jake Irvin",'SP',180,{SO:6,GB:5,LD:3,FB:4,BB:1,'2B':4,HR:1},5,1),
+  cardPitcher("Brad Lord",'RP',230,{SO:5,GB:9,LD:2,FB:2,BB:1,'1B':3,'2B':4,HR:1},2,2),
+  cardPitcher("Richard Lovelady",'RP',80,{SO:4,GB:5,LD:1,FB:4,BB:3,'1B':2,'2B':4,HR:1},1,4),
+  cardPitcher("Carson Palmquist",'SP',140,{SO:4,GB:3,LD:2,FB:4,BB:3,'1B':3,'2B':7,HR:1},4,6),
+  cardPitcher("Mitchell Parker",'RP',100,{SO:5,GB:6,LD:2,FB:4,'1B':2,'2B':1,HR:1},2,2),
+  cardPitcher("Paxton Schultz",'RP',150,{SO:5,GB:4,LD:1,FB:4,BB:1,'1B':4,'2B':2,HR:1},1,6),
+  cardPitcher("Orlando Ribalta",'RP',210,{SO:5,GB:5,LD:5,FB:2,BB:1,'1B':2,'2B':3,HR:1},1,4),
+  cardPitcher("PJ Poulin",'RP',210,{SO:4,GB:7,LD:3,FB:2,BB:3,'2B':5,HR:1},1,4),
+  cardPitcher("Gus Varland",'RP',10,{SO:5,GB:4,LD:3,FB:4,BB:1,'2B':3,HR:1},1,1),
 ];
 
 const NYM_BATTERS = [
@@ -1683,18 +1684,18 @@ const NYM_BATTERS = [
   cardBatter("Juan Soto",["LF","RF"],490,11,{SO:1,GB:2,FB:3,BB:6,'1B':5,'2B':1,HR:1},13,{LF:1,RF:1}),
 ];
 const NYM_PITCHERS = [
-  cardPitcher("Xzavion Curry",'RP',190,{SO:3,GB:11,FB:3,BB:1,'1B':1,'2B':4,HR:1},2,3),
-  cardPitcher("Daniel Duarte",'RP',300,{SO:5,GB:11,FB:3,BB:3,'1B':2,'2B':2,HR:1},1,4),
-  cardPitcher("Tobias Myers",'RP',170,{SO:4,GB:9,FB:3,'1B':2,'2B':2,HR:1},2,4),
-  cardPitcher("Nolan McLean",'SP',380,{SO:8,GB:9,FB:2,BB:1,'1B':2,'2B':4,HR:1},6,1),
-  cardPitcher("Sean Manaea",'SP',240,{SO:6,GB:7,FB:4,BB:1,'1B':1,'2B':5,HR:1},6,2),
-  cardPitcher("Christian Scott",'SP',370,{SO:7,GB:7,FB:3,BB:2,'2B':7,HR:1},5,3),
-  cardPitcher("Cionel Perez",'RP',160,{SO:5,GB:9,FB:2,BB:1,'1B':4,HR:1},1,3),
-  cardPitcher("Jonathan Pintaro",'RP',280,{SO:6,GB:7,FB:4,BB:3,HR:1},2,4),
-  cardPitcher("Kodai Senga",'SP',10,{SO:7,GB:6,FB:3,BB:3,'2B':1,HR:1},4,1),
-  cardPitcher("Zac Thornton",'SP',470,{SO:4,GB:8,FB:5,BB:1,'1B':2,'2B':5,HR:1},6,4),
-  cardPitcher("Austin Warren",'RP',130,{SO:6,GB:6,FB:4,BB:2,'2B':5,HR:1},1,3),
-  cardPitcher("Devin Williams",'RP',50,{SO:8,GB:8,FB:1,BB:1,'1B':1,'2B':7,HR:1},1,1),
+  cardPitcher("Xzavion Curry",'RP',190,{SO:3,GB:3,LD:8,FB:3,BB:1,'1B':1,'2B':4,HR:1},2,3),
+  cardPitcher("Daniel Duarte",'RP',300,{SO:5,GB:6,LD:5,FB:3,BB:3,'1B':2,'2B':2,HR:1},1,4),
+  cardPitcher("Tobias Myers",'RP',170,{SO:4,GB:5,LD:4,FB:3,'1B':2,'2B':2,HR:1},2,4),
+  cardPitcher("Nolan McLean",'SP',380,{SO:8,GB:7,LD:2,FB:2,BB:1,'1B':2,'2B':4,HR:1},6,1),
+  cardPitcher("Sean Manaea",'SP',240,{SO:6,GB:5,LD:2,FB:4,BB:1,'1B':1,'2B':5,HR:1},6,2),
+  cardPitcher("Christian Scott",'SP',370,{SO:7,GB:4,LD:3,FB:3,BB:2,'2B':7,HR:1},5,3),
+  cardPitcher("Cionel Perez",'RP',160,{SO:5,GB:8,LD:1,FB:2,BB:1,'1B':4,HR:1},1,3),
+  cardPitcher("Jonathan Pintaro",'RP',280,{SO:6,GB:6,LD:1,FB:4,BB:3,HR:1},2,4),
+  cardPitcher("Kodai Senga",'SP',10,{SO:7,GB:4,LD:2,FB:3,BB:3,'2B':1,HR:1},4,1),
+  cardPitcher("Zac Thornton",'SP',470,{SO:4,GB:6,LD:2,FB:5,BB:1,'1B':2,'2B':5,HR:1},6,4),
+  cardPitcher("Austin Warren",'RP',130,{SO:6,GB:5,LD:1,FB:4,BB:2,'2B':5,HR:1},1,3),
+  cardPitcher("Devin Williams",'RP',50,{SO:8,GB:5,LD:3,FB:1,BB:1,'1B':1,'2B':7,HR:1},1,1),
 ];
 
 const STL_BATTERS = [
@@ -1713,19 +1714,19 @@ const STL_BATTERS = [
   cardBatter("Ivan Herrera",["C"],220,10,{SO:1,GB:2,FB:1,BB:7,'1B':6,'2B':2,HR:1},10,{C:4}),
 ];
 const STL_PITCHERS = [
-  cardPitcher("Justin Bruihl",'RP',160,{SO:3,GB:10,FB:4,BB:1,'1B':2,'2B':6,HR:1},1,2),
-  cardPitcher("Hunter Dobbins",'SP',350,{SO:5,GB:7,FB:5,BB:1,'1B':1,'2B':4,HR:1},5,3),
-  cardPitcher("Caleb Ferguson",'RP',180,{SO:4,GB:6,FB:4,BB:3,'1B':2,'2B':4,HR:1},1,6),
-  cardPitcher("Kyle Leahy",'SP',190,{SO:5,GB:10,FB:3,'1B':1,'2B':7,HR:1},5,1),
-  cardPitcher("Gordon Graceffo",'RP',270,{SO:3,GB:7,FB:6,BB:2,'1B':2,'2B':3,HR:1},1,6),
-  cardPitcher("Luis Gastelum",'RP',50,{SO:5,GB:9,FB:2,BB:1,'2B':2,HR:1},1,3),
+  cardPitcher("Justin Bruihl",'RP',160,{SO:3,GB:8,LD:2,FB:4,BB:1,'1B':2,'2B':6,HR:1},1,2),
+  cardPitcher("Hunter Dobbins",'SP',350,{SO:5,GB:6,LD:1,FB:5,BB:1,'1B':1,'2B':4,HR:1},5,3),
+  cardPitcher("Caleb Ferguson",'RP',180,{SO:4,GB:5,LD:1,FB:4,BB:3,'1B':2,'2B':4,HR:1},1,6),
+  cardPitcher("Kyle Leahy",'SP',190,{SO:5,GB:8,LD:2,FB:3,'1B':1,'2B':7,HR:1},5,1),
+  cardPitcher("Gordon Graceffo",'RP',270,{SO:3,GB:6,LD:1,FB:6,BB:2,'1B':2,'2B':3,HR:1},1,6),
+  cardPitcher("Luis Gastelum",'RP',50,{SO:5,GB:6,LD:3,FB:2,BB:1,'2B':2,HR:1},1,3),
   cardPitcher("Riley O'Brien",'RP',260,{SO:5,GB:6,FB:4,BB:3,'1B':3,'2B':5,HR:1},1,6),
-  cardPitcher("Michael McGreevy",'SP',340,{SO:4,GB:10,FB:4,'1B':1,'2B':4,HR:1},6,2),
-  cardPitcher("Matthew Liberatore",'SP',70,{SO:6,GB:8,FB:3,BB:1,'1B':1,'2B':3,HR:1},5,1),
-  cardPitcher("Andre Pallante",'SP',430,{SO:4,GB:11,FB:2,BB:1,'1B':2,'2B':6,HR:1},6,3),
-  cardPitcher("George Soriano",'RP',210,{SO:5,GB:8,FB:3,BB:2,'1B':1,'2B':2,HR:1},1,5),
-  cardPitcher("Ryne Stanek",'RP',130,{SO:6,GB:8,FB:3,BB:2,'2B':2,HR:1},1,2),
-  cardPitcher("Matt Svanson",'RP',130,{SO:4,GB:6,FB:4,BB:2,'1B':3,'2B':4,HR:1},1,5),
+  cardPitcher("Michael McGreevy",'SP',340,{SO:4,GB:8,LD:2,FB:4,'1B':1,'2B':4,HR:1},6,2),
+  cardPitcher("Matthew Liberatore",'SP',70,{SO:6,GB:5,LD:3,FB:3,BB:1,'1B':1,'2B':3,HR:1},5,1),
+  cardPitcher("Andre Pallante",'SP',430,{SO:4,GB:9,LD:2,FB:2,BB:1,'1B':2,'2B':6,HR:1},6,3),
+  cardPitcher("George Soriano",'RP',210,{SO:5,GB:5,LD:3,FB:3,BB:2,'1B':1,'2B':2,HR:1},1,5),
+  cardPitcher("Ryne Stanek",'RP',130,{SO:6,GB:5,LD:3,FB:3,BB:2,'2B':2,HR:1},1,2),
+  cardPitcher("Matt Svanson",'RP',130,{SO:4,GB:4,LD:2,FB:4,BB:2,'1B':3,'2B':4,HR:1},1,5),
 ];
 
 // Chicago Cubs — pitching staff only so far (no batter cards collected yet).
@@ -1747,27 +1748,27 @@ const CHC_BATTERS = [
   cardBatter("Michael Conforto",["LF","RF"],190,9,{SO:3,GB:2,FB:3,BB:5,'1B':3,'2B':2,HR:1},11,{LF:0,RF:0}),
 ];
 const CHC_PITCHERS = [
-  cardPitcher("Colin Rea",'SP',170,{SO:4,GB:10,FB:4,'1B':1,'2B':4,HR:1},5,1),
-  cardPitcher("Ryan Rolison",'RP',170,{SO:7,GB:9,FB:3,BB:1,'1B':2,'2B':4,HR:1},1,1),
-  cardPitcher("Caleb Thielbar",'RP',110,{SO:7,GB:7,FB:3,BB:1,'2B':1,HR:1},1,3),
-  cardPitcher("Trent Thornton",'RP',190,{SO:3,GB:14,FB:2,BB:1,'1B':2,'2B':4,HR:1},1,1),
-  cardPitcher("Jacob Webb",'RP',250,{SO:6,GB:6,FB:4,BB:1,'1B':4,'2B':1,HR:1},1,6),
-  cardPitcher("Ethan Roberts",'RP',110,{SO:3,GB:12,FB:2,BB:2,'1B':3,'2B':4,HR:1},1,1),
-  cardPitcher("Ryan Zeferjahn",'RP',200,{SO:8,GB:7,FB:1,BB:3,'1B':1,'2B':4,HR:1},1,4),
-  cardPitcher("Matthew Boyd",'SP',410,{SO:5,GB:10,FB:2,BB:1,'1B':2,'2B':4,HR:1},6,3),
-  cardPitcher("Ben Brown",'RP',360,{SO:5,GB:8,FB:4,BB:1,'1B':4,'2B':4,HR:1},2,6),
-  cardPitcher("Edward Cabrera",'SP',190,{SO:5,GB:9,FB:4,BB:1,'2B':2,HR:1},5,1),
-  cardPitcher("Aaron Civale",'SP',10,{SO:4,GB:9,FB:4,'1B':1,'2B':3,HR:1},5,1),
-  cardPitcher("Kevin Gausman",'SP',330,{SO:6,GB:9,FB:3,'1B':1,'2B':6,HR:1},6,2),
-  cardPitcher("Tyler Ferguson",'RP',200,{SO:7,GB:5,FB:5,BB:1,'2B':1,HR:1},1,5),
-  cardPitcher("Javier Assad",'SP',410,{SO:4,GB:9,FB:4,BB:1,'1B':1,'2B':1,HR:1},5,4),
-  cardPitcher("Phil Maton",'RP',110,{SO:5,GB:5,FB:3,BB:3,'1B':3,'2B':1,HR:1},1,6),
-  cardPitcher("Shota Imanaga",'SP',400,{SO:6,GB:9,FB:2,'1B':2,'2B':1,HR:1},6,4),
-  cardPitcher("Clay Holmes",'SP',490,{SO:4,GB:9,FB:4,BB:1,'1B':2,'2B':6,HR:1},6,4),
-  cardPitcher("Hoby Milner",'RP',170,{SO:2,GB:9,FB:6,BB:1,'1B':1,'2B':5,HR:1},1,3),
+  cardPitcher("Colin Rea",'SP',170,{SO:4,GB:8,LD:2,FB:4,'1B':1,'2B':4,HR:1},5,1),
+  cardPitcher("Ryan Rolison",'RP',170,{SO:7,GB:7,LD:2,FB:3,BB:1,'1B':2,'2B':4,HR:1},1,1),
+  cardPitcher("Caleb Thielbar",'RP',110,{SO:7,GB:3,LD:4,FB:3,BB:1,'2B':1,HR:1},1,3),
+  cardPitcher("Trent Thornton",'RP',190,{SO:3,GB:10,LD:4,FB:2,BB:1,'1B':2,'2B':4,HR:1},1,1),
+  cardPitcher("Jacob Webb",'RP',250,{SO:6,GB:5,LD:1,FB:4,BB:1,'1B':4,'2B':1,HR:1},1,6),
+  cardPitcher("Ethan Roberts",'RP',110,{SO:3,GB:8,LD:4,FB:2,BB:2,'1B':3,'2B':4,HR:1},1,1),
+  cardPitcher("Ryan Zeferjahn",'RP',200,{SO:8,GB:4,LD:3,FB:1,BB:3,'1B':1,'2B':4,HR:1},1,4),
+  cardPitcher("Matthew Boyd",'SP',410,{SO:5,GB:7,LD:3,FB:2,BB:1,'1B':2,'2B':4,HR:1},6,3),
+  cardPitcher("Ben Brown",'RP',360,{SO:5,GB:6,LD:2,FB:4,BB:1,'1B':4,'2B':4,HR:1},2,6),
+  cardPitcher("Edward Cabrera",'SP',190,{SO:5,GB:7,LD:2,FB:4,BB:1,'2B':2,HR:1},5,1),
+  cardPitcher("Aaron Civale",'SP',10,{SO:4,GB:5,LD:4,FB:4,'1B':1,'2B':3,HR:1},5,1),
+  cardPitcher("Kevin Gausman",'SP',330,{SO:6,GB:6,LD:3,FB:3,'1B':1,'2B':6,HR:1},6,2),
+  cardPitcher("Tyler Ferguson",'RP',200,{SO:7,GB:4,LD:1,FB:5,BB:1,'2B':1,HR:1},1,5),
+  cardPitcher("Javier Assad",'SP',410,{SO:4,GB:7,LD:2,FB:4,BB:1,'1B':1,'2B':1,HR:1},5,4),
+  cardPitcher("Phil Maton",'RP',110,{SO:5,GB:4,LD:1,FB:3,BB:3,'1B':3,'2B':1,HR:1},1,6),
+  cardPitcher("Shota Imanaga",'SP',400,{SO:6,GB:5,LD:4,FB:2,'1B':2,'2B':1,HR:1},6,4),
+  cardPitcher("Clay Holmes",'SP',490,{SO:4,GB:8,LD:1,FB:4,BB:1,'1B':2,'2B':6,HR:1},6,4),
+  cardPitcher("Hoby Milner",'RP',170,{SO:2,GB:7,LD:2,FB:6,BB:1,'1B':1,'2B':5,HR:1},1,3),
   cardPitcher("Jayden Murray",'RP',10,{SO:4,GB:3,FB:7,BB:1,'1B':3,'2B':4,HR:1},2,2),
-  cardPitcher("Daniel Palencia",'RP',100,{SO:7,GB:5,FB:6,'1B':2,'2B':6,HR:1},1,1),
-  cardPitcher("David Peterson",'SP',250,{SO:4,GB:9,FB:4,BB:1,'1B':1,'2B':7,HR:1},5,2),
+  cardPitcher("Daniel Palencia",'RP',100,{SO:7,GB:4,LD:1,FB:6,'1B':2,'2B':6,HR:1},1,1),
+  cardPitcher("David Peterson",'SP',250,{SO:4,GB:8,LD:1,FB:4,BB:1,'1B':1,'2B':7,HR:1},5,2),
 ];
 
 const CIN_BATTERS = [
@@ -1787,26 +1788,26 @@ const CIN_BATTERS = [
   cardBatter("Tyler Stephenson",["C"],220,10,{SO:2,GB:2,FB:3,BB:4,'1B':6,'2B':2,HR:1},11,{C:4}),
 ];
 const CIN_PITCHERS = [
-  cardPitcher("Andrew Abbott",'SP',250,{SO:4,GB:11,FB:3,BB:1,'1B':1,'2B':6,HR:1},5,1),
-  cardPitcher("Tejay Antone",'RP',240,{SO:5,GB:9,FB:3,BB:1,'1B':1,'2B':4,HR:1},1,5),
-  cardPitcher("Graham Ashcraft",'RP',190,{SO:8,GB:9,FB:2,BB:7,HR:1},1,1),
-  cardPitcher("Brock Burke",'RP',190,{SO:5,GB:8,FB:4,BB:2,'2B':7,HR:1},1,3),
-  cardPitcher("Chase Burns",'SP',440,{SO:7,GB:8,FB:3,BB:1,'2B':6,HR:1},6,3),
-  cardPitcher("Hunter Greene",'SP',280,{SO:7,GB:7,FB:3,'1B':2,'2B':3,HR:1},5,3),
-  cardPitcher("Julian Garcia",'RP',240,{SO:5,GB:6,FB:5,BB:2,'1B':1,'2B':1,HR:1},1,6),
-  cardPitcher("Jose Franco",'RP',170,{SO:3,GB:6,FB:5,BB:3,'1B':2,'2B':2,HR:1},2,5),
-  cardPitcher("Pierce Johnson",'RP',160,{SO:5,GB:7,FB:6,BB:1,'2B':2,HR:1},1,2),
-  cardPitcher("Nick Lodolo",'SP',270,{SO:4,GB:6,FB:4,BB:2,'1B':3,'2B':1,HR:1},5,6),
-  cardPitcher("Rhett Lowder",'SP',240,{SO:4,GB:9,FB:4,BB:1,'1B':1,'2B':6,HR:1},5,2),
-  cardPitcher("Sam Moll",'RP',160,{SO:6,GB:9,FB:2,BB:2,'1B':3,'2B':4,HR:1},1,2),
+  cardPitcher("Andrew Abbott",'SP',250,{SO:4,GB:7,LD:4,FB:3,BB:1,'1B':1,'2B':6,HR:1},5,1),
+  cardPitcher("Tejay Antone",'RP',240,{SO:5,GB:6,LD:3,FB:3,BB:1,'1B':1,'2B':4,HR:1},1,5),
+  cardPitcher("Graham Ashcraft",'RP',190,{SO:8,GB:8,LD:1,FB:2,BB:7,HR:1},1,1),
+  cardPitcher("Brock Burke",'RP',190,{SO:5,GB:6,LD:2,FB:4,BB:2,'2B':7,HR:1},1,3),
+  cardPitcher("Chase Burns",'SP',440,{SO:7,GB:5,LD:3,FB:3,BB:1,'2B':6,HR:1},6,3),
+  cardPitcher("Hunter Greene",'SP',280,{SO:7,GB:4,LD:3,FB:3,'1B':2,'2B':3,HR:1},5,3),
+  cardPitcher("Julian Garcia",'RP',240,{SO:5,GB:5,LD:1,FB:5,BB:2,'1B':1,'2B':1,HR:1},1,6),
+  cardPitcher("Jose Franco",'RP',170,{SO:3,GB:4,LD:2,FB:5,BB:3,'1B':2,'2B':2,HR:1},2,5),
+  cardPitcher("Pierce Johnson",'RP',160,{SO:5,GB:6,LD:1,FB:6,BB:1,'2B':2,HR:1},1,2),
+  cardPitcher("Nick Lodolo",'SP',270,{SO:4,GB:5,LD:1,FB:4,BB:2,'1B':3,'2B':1,HR:1},5,6),
+  cardPitcher("Rhett Lowder",'SP',240,{SO:4,GB:7,LD:2,FB:4,BB:1,'1B':1,'2B':6,HR:1},5,2),
+  cardPitcher("Sam Moll",'RP',160,{SO:6,GB:7,LD:2,FB:2,BB:2,'1B':3,'2B':4,HR:1},1,2),
   cardPitcher("Luis Mey",'RP',180,{SO:9,GB:4,FB:3,BB:5,'1B':2,HR:1},1,3),
-  cardPitcher("Ron Marinaccio",'RP',50,{SO:4,GB:10,FB:3,BB:1,'1B':1,'2B':3,HR:1},1,1),
-  cardPitcher("Connor Phillips",'RP',70,{SO:5,GB:6,FB:5,BB:10,HR:1},1,1),
-  cardPitcher("Chase Petty",'RP',160,{SO:2,GB:8,FB:7,BB:1,'1B':1,'2B':1,HR:1},1,3),
-  cardPitcher("Emilio Pagan",'RP',180,{SO:6,GB:8,FB:3,BB:1,'1B':1,'2B':2,HR:1},1,4),
-  cardPitcher("Tony Santillan",'RP',130,{SO:5,GB:6,FB:6,BB:1,'1B':1,HR:1},1,3),
-  cardPitcher("Brady Singer",'SP',210,{SO:4,GB:8,FB:5,BB:1,'1B':1,'2B':2,HR:1},5,2),
-  cardPitcher("Brandon Williamson",'SP',80,{SO:3,GB:10,FB:3,BB:3,'1B':1,'2B':5,HR:1},5,1),
+  cardPitcher("Ron Marinaccio",'RP',50,{SO:4,GB:6,LD:4,FB:3,BB:1,'1B':1,'2B':3,HR:1},1,1),
+  cardPitcher("Connor Phillips",'RP',70,{SO:5,GB:3,LD:3,FB:5,BB:10,HR:1},1,1),
+  cardPitcher("Chase Petty",'RP',160,{SO:2,GB:6,LD:2,FB:7,BB:1,'1B':1,'2B':1,HR:1},1,3),
+  cardPitcher("Emilio Pagan",'RP',180,{SO:6,GB:2,LD:6,FB:3,BB:1,'1B':1,'2B':2,HR:1},1,4),
+  cardPitcher("Tony Santillan",'RP',130,{SO:5,GB:5,LD:1,FB:6,BB:1,'1B':1,HR:1},1,3),
+  cardPitcher("Brady Singer",'SP',210,{SO:4,GB:7,LD:1,FB:5,BB:1,'1B':1,'2B':2,HR:1},5,2),
+  cardPitcher("Brandon Williamson",'SP',80,{SO:3,GB:5,LD:5,FB:3,BB:3,'1B':1,'2B':5,HR:1},5,1),
 ];
 
 const MIL_BATTERS = [
@@ -1826,12 +1827,12 @@ const MIL_BATTERS = [
   cardBatter("Sal Frelick",["LF","RF"],40,16,{GB:2,FB:1,BB:4,'1B':10,'2B':3,HR:1},8,{LF:1,RF:1}),
 ];
 const MIL_PITCHERS = [
-  cardPitcher("Kyle Harrison",'SP',410,{SO:7,GB:7,FB:3,BB:1,'1B':1,'2B':3,HR:1},5,4),
-  cardPitcher("DL Hall",'RP',230,{SO:6,GB:10,FB:1,BB:9,HR:1},1,3),
-  cardPitcher("Robert Gasser",'SP',320,{SO:5,GB:9,FB:3,BB:1,'1B':1,'2B':2,HR:1},5,3),
-  cardPitcher("Shane Drohan",'SP',400,{SO:5,GB:7,FB:4,BB:1,'1B':2,'2B':5,HR:1},5,5),
-  cardPitcher("Aaron Ashby",'RP',160,{SO:9,GB:7,FB:1,BB:2,'1B':1,'2B':6,HR:1},1,2),
-  cardPitcher("Grant Anderson",'RP',190,{SO:5,GB:10,FB:2,BB:1,'2B':3,HR:1},1,4),
+  cardPitcher("Kyle Harrison",'SP',410,{SO:7,GB:5,LD:2,FB:3,BB:1,'1B':1,'2B':3,HR:1},5,4),
+  cardPitcher("DL Hall",'RP',230,{SO:6,GB:7,LD:3,FB:1,BB:9,HR:1},1,3),
+  cardPitcher("Robert Gasser",'SP',320,{SO:5,GB:5,LD:4,FB:3,BB:1,'1B':1,'2B':2,HR:1},5,3),
+  cardPitcher("Shane Drohan",'SP',400,{SO:5,GB:5,LD:2,FB:4,BB:1,'1B':2,'2B':5,HR:1},5,5),
+  cardPitcher("Aaron Ashby",'RP',160,{SO:9,GB:6,LD:1,FB:1,BB:2,'1B':1,'2B':6,HR:1},1,2),
+  cardPitcher("Grant Anderson",'RP',190,{SO:5,GB:5,LD:5,FB:2,BB:1,'2B':3,HR:1},1,4),
   cardPitcher("Logan Henderson",'SP',420,{SO:8,GB:8,FB:3,'2B':1,HR:1},5,3),
   cardPitcher("Joel Kuhnel",'RP',180,{SO:3,GB:9,FB:2,BB:2,'1B':3,'2B':1,HR:1},1,6),
   cardPitcher("Dustin May",'SP',370,{SO:5,GB:7,FB:4,BB:1,'1B':3,'2B':6,HR:1},5,4),
@@ -1863,25 +1864,25 @@ const DOD_BATTERS = [
   cardBatter("Alek Thomas",['CF','LF','RF'],10,19,{SO:3,GB:4,FB:3,'2B':8,HR:1},7,{CF:3,LF:2,RF:2}),
 ];
 const DOD_PITCHERS = [
-  cardPitcher("Shohei Ohtani",'SP',760,{SO:7,GB:10,FB:1,BB:1,'1B':1,'2B':6,HR:1},6,4,'R'),
-  cardPitcher("Kris Bubic",'SP',430,{SO:6,GB:7,FB:4,BB:2,'1B':1,'2B':6,HR:1},6,3),
-  cardPitcher("Jack Dreyer",'RP',250,{SO:7,GB:8,FB:2,BB:1,'1B':2,'2B':1,HR:1},1,5),
-  cardPitcher("Tyler Glasnow",'SP',570,{SO:8,GB:7,FB:3,BB:1,'2B':2,HR:1},6,5),
-  cardPitcher("Seth Halvorsen",'RP',150,{SO:4,GB:7,FB:3,BB:3,'1B':2,'2B':3,HR:1},1,5),
-  cardPitcher("Kyle Hurt",'RP',150,{SO:8,GB:8,FB:2,BB:2,'1B':2,'2B':4,HR:1},1,1),
-  cardPitcher("Jonathan Hernandez",'RP',110,{SO:4,GB:8,FB:6,BB:1,'2B':3,HR:1},1,1),
-  cardPitcher("Edgardo Henriquez",'RP',250,{SO:6,GB:10,FB:1,BB:3,'1B':2,'2B':4,HR:1},1,4),
-  cardPitcher("Roki Sasaki",'SP',290,{SO:6,GB:9,FB:2,BB:1,'2B':2,HR:1},5,3),
-  cardPitcher("Eric Lauer",'SP',260,{SO:3,GB:9,FB:6,'1B':1,'2B':1,HR:1},5,2),
-  cardPitcher("Will Klein",'RP',190,{SO:6,GB:7,FB:1,BB:2,'1B':6,'2B':3,HR:1},1,6),
-  cardPitcher("Tarik Skubal",'SP',490,{SO:7,GB:8,FB:3,'1B':1,'2B':4,HR:1},6,4),
-  cardPitcher("Emmet Sheehan",'SP',250,{SO:6,GB:7,FB:3,BB:1,'1B':1,'2B':2,HR:1},5,4),
-  cardPitcher("Tanner Scott",'RP',270,{SO:7,GB:6,FB:4,BB:1,'1B':1,'2B':4,HR:1},1,6),
-  cardPitcher("Alex Vesia",'RP',240,{SO:8,GB:6,FB:3,BB:4,'1B':2,'2B':3,HR:1},1,4),
+  cardPitcher("Shohei Ohtani",'SP',760,{SO:7,GB:7,LD:3,FB:1,BB:1,'1B':1,'2B':6,HR:1},6,4,'R'),
+  cardPitcher("Kris Bubic",'SP',430,{SO:6,GB:6,LD:1,FB:4,BB:2,'1B':1,'2B':6,HR:1},6,3),
+  cardPitcher("Jack Dreyer",'RP',250,{SO:7,GB:6,LD:2,FB:2,BB:1,'1B':2,'2B':1,HR:1},1,5),
+  cardPitcher("Tyler Glasnow",'SP',570,{SO:8,GB:5,LD:2,FB:3,BB:1,'2B':2,HR:1},6,5),
+  cardPitcher("Seth Halvorsen",'RP',150,{SO:4,GB:5,LD:2,FB:3,BB:3,'1B':2,'2B':3,HR:1},1,5),
+  cardPitcher("Kyle Hurt",'RP',150,{SO:8,GB:6,LD:2,FB:2,BB:2,'1B':2,'2B':4,HR:1},1,1),
+  cardPitcher("Jonathan Hernandez",'RP',110,{SO:4,GB:7,LD:1,FB:6,BB:1,'2B':3,HR:1},1,1),
+  cardPitcher("Edgardo Henriquez",'RP',250,{SO:6,GB:6,LD:4,FB:1,BB:3,'1B':2,'2B':4,HR:1},1,4),
+  cardPitcher("Roki Sasaki",'SP',290,{SO:6,GB:6,LD:3,FB:2,BB:1,'2B':2,HR:1},5,3),
+  cardPitcher("Eric Lauer",'SP',260,{SO:3,GB:5,LD:4,FB:6,'1B':1,'2B':1,HR:1},5,2),
+  cardPitcher("Will Klein",'RP',190,{SO:6,GB:5,LD:2,FB:1,BB:2,'1B':6,'2B':3,HR:1},1,6),
+  cardPitcher("Tarik Skubal",'SP',490,{SO:7,GB:6,LD:2,FB:3,'1B':1,'2B':4,HR:1},6,4),
+  cardPitcher("Emmet Sheehan",'SP',250,{SO:6,GB:4,LD:3,FB:3,BB:1,'1B':1,'2B':2,HR:1},5,4),
+  cardPitcher("Tanner Scott",'RP',270,{SO:7,GB:4,LD:2,FB:4,BB:1,'1B':1,'2B':4,HR:1},1,6),
+  cardPitcher("Alex Vesia",'RP',240,{SO:8,GB:3,LD:3,FB:3,BB:4,'1B':2,'2B':3,HR:1},1,4),
   cardPitcher("Blake Treinen",'RP',180,{SO:6,GB:7,FB:4,BB:1,'1B':1,'2B':7,HR:1},1,3),
-  cardPitcher("Brock Stewart",'RP',320,{SO:6,GB:10,FB:2,BB:1,'1B':1,HR:1},1,6),
-  cardPitcher("Yoshinobu Yamamoto",'SP',530,{SO:6,GB:9,FB:4,'1B':1,'2B':4,HR:1},7,3),
-  cardPitcher("Justin Wrobleski",'SP',410,{SO:4,GB:8,FB:6,'1B':1,'2B':3,HR:1},6,3),
+  cardPitcher("Brock Stewart",'RP',320,{SO:6,GB:6,LD:4,FB:2,BB:1,'1B':1,HR:1},1,6),
+  cardPitcher("Yoshinobu Yamamoto",'SP',530,{SO:6,GB:7,LD:2,FB:4,'1B':1,'2B':4,HR:1},7,3),
+  cardPitcher("Justin Wrobleski",'SP',410,{SO:4,GB:6,LD:2,FB:6,'1B':1,'2B':3,HR:1},6,3),
 ];
 
 const PAD_BATTERS = [
@@ -1918,38 +1919,38 @@ const ARI_BATTERS = [
   cardBatter("Jose Fernandez",['1B','3B'],140,20,{SO:2,GB:2,FB:1,'1B':12,'2B':2,HR:1},8,{'1B':1,'3B':3}),
 ];
 const ARI_PITCHERS = [
-  cardPitcher("Zac Gallen",'SP',60,{SO:3,GB:8,FB:5,'1B':3,'2B':2,HR:1},5,2),
-  cardPitcher("Taylor Clarke",'RP',240,{SO:3,GB:14,FB:3,'1B':2,'2B':4,HR:1},1,2),
-  cardPitcher("Drey Jameson",'RP',180,{SO:4,GB:7,FB:6,BB:2,'2B':7,HR:1},2,2),
-  cardPitcher("Kevin Ginkel",'RP',230,{SO:5,GB:7,FB:4,BB:1,'1B':2,'2B':2,HR:1},1,6),
-  cardPitcher("Brandyn Garcia",'RP',300,{SO:7,GB:9,FB:2,BB:1,'1B':3,'2B':4,HR:1},1,5),
-  cardPitcher("Jonathan Loaisiga",'RP',250,{SO:4,GB:8,FB:4,BB:1,'1B':2,'2B':6,HR:1},1,6),
-  cardPitcher("Zack Littell",'SP',300,{SO:3,GB:8,FB:5,BB:1,'1B':2,'2B':1,HR:1},5,4),
-  cardPitcher("Merrill Kelly",'SP',120,{SO:3,GB:9,FB:4,BB:1,'1B':2,'2B':1,HR:1},6,2),
-  cardPitcher("Brandon Pfaadt",'SP',460,{SO:4,GB:11,FB:2,BB:1,'1B':1,'2B':6,HR:1},6,4),
-  cardPitcher("Juan Morillo",'RP',260,{SO:7,GB:9,FB:1,BB:1,'1B':2,'2B':6,HR:1},1,5),
-  cardPitcher("Ryne Nelson",'SP',300,{SO:4,GB:8,FB:5,'1B':2,'2B':1,HR:1},6,3),
-  cardPitcher("Eduardo Rodriguez",'SP',330,{SO:4,GB:11,FB:4,'2B':7,HR:1},6,1),
-  cardPitcher("Michael Soroka",'SP',420,{SO:6,GB:8,FB:3,BB:1,'1B':1,'2B':7,HR:1},5,4),
-  cardPitcher("Ryan Thompson",'RP',170,{SO:3,GB:8,FB:3,BB:1,'1B':4,'2B':6,HR:1},1,6),
+  cardPitcher("Zac Gallen",'SP',60,{SO:3,GB:7,LD:1,FB:5,'1B':3,'2B':2,HR:1},5,2),
+  cardPitcher("Taylor Clarke",'RP',240,{SO:3,GB:9,LD:5,FB:3,'1B':2,'2B':4,HR:1},1,2),
+  cardPitcher("Drey Jameson",'RP',180,{SO:4,GB:6,LD:1,FB:6,BB:2,'2B':7,HR:1},2,2),
+  cardPitcher("Kevin Ginkel",'RP',230,{SO:5,GB:5,LD:2,FB:4,BB:1,'1B':2,'2B':2,HR:1},1,6),
+  cardPitcher("Brandyn Garcia",'RP',300,{SO:7,GB:7,LD:2,FB:2,BB:1,'1B':3,'2B':4,HR:1},1,5),
+  cardPitcher("Jonathan Loaisiga",'RP',250,{SO:4,GB:7,LD:1,FB:4,BB:1,'1B':2,'2B':6,HR:1},1,6),
+  cardPitcher("Zack Littell",'SP',300,{SO:3,GB:5,LD:3,FB:5,BB:1,'1B':2,'2B':1,HR:1},5,4),
+  cardPitcher("Merrill Kelly",'SP',120,{SO:3,GB:7,LD:2,FB:4,BB:1,'1B':2,'2B':1,HR:1},6,2),
+  cardPitcher("Brandon Pfaadt",'SP',460,{SO:4,GB:7,LD:4,FB:2,BB:1,'1B':1,'2B':6,HR:1},6,4),
+  cardPitcher("Juan Morillo",'RP',260,{SO:7,GB:6,LD:3,FB:1,BB:1,'1B':2,'2B':6,HR:1},1,5),
+  cardPitcher("Ryne Nelson",'SP',300,{SO:4,GB:5,LD:3,FB:5,'1B':2,'2B':1,HR:1},6,3),
+  cardPitcher("Eduardo Rodriguez",'SP',330,{SO:4,GB:8,LD:3,FB:4,'2B':7,HR:1},6,1),
+  cardPitcher("Michael Soroka",'SP',420,{SO:6,GB:5,LD:3,FB:3,BB:1,'1B':1,'2B':7,HR:1},5,4),
+  cardPitcher("Ryan Thompson",'RP',170,{SO:3,GB:6,LD:2,FB:3,BB:1,'1B':4,'2B':6,HR:1},1,6),
 ];
 const PAD_PITCHERS = [
-  cardPitcher("Jason Adam",'RP',160,{SO:4,GB:12,FB:3,'2B':4,HR:1},1,1),
-  cardPitcher("Walker Buehler",'SP',240,{SO:5,GB:9,FB:3,BB:1,'1B':1,'2B':6,HR:1},5,2),
-  cardPitcher("Griffin Canning",'SP',290,{SO:5,GB:7,FB:2,BB:2,'1B':3,'2B':1,HR:1},5,6),
-  cardPitcher("Jeremiah Estrada",'RP',220,{SO:8,GB:6,FB:4,BB:2,'1B':2,'2B':4,HR:1},1,3),
-  cardPitcher("Kyle Hart",'RP',210,{SO:5,GB:9,FB:4,BB:1,'2B':7,HR:1},1,3),
-  cardPitcher("Mason Miller",'RP',310,{SO:11,GB:5,FB:2,BB:2,'1B':6,HR:1},1,5),
-  cardPitcher("Yuki Matsui",'RP',240,{SO:6,GB:9,FB:1,BB:3,'2B':2,HR:1},1,6),
-  cardPitcher("Michael King",'SP',400,{SO:5,GB:10,FB:3,BB:1,'1B':1,'2B':5,HR:1},6,2),
-  cardPitcher("Casey Mize",'SP',370,{SO:6,GB:9,FB:4,'2B':7,HR:1},5,2),
-  cardPitcher("Adrian Morejon",'RP',260,{SO:7,GB:7,FB:2,BB:1,'1B':5,'2B':4,HR:1},1,6),
-  cardPitcher("David Morgan",'RP',100,{SO:6,GB:6,FB:2,BB:3,'1B':2,'2B':7,HR:1},1,4),
-  cardPitcher("Bradgley Rodriguez",'RP',260,{SO:6,GB:9,FB:2,BB:1,'1B':2,'2B':6,HR:1},1,5),
-  cardPitcher("Robbie Ray",'SP',360,{SO:5,GB:8,FB:4,BB:2,'2B':4,HR:1},5,3),
-  cardPitcher("Wandy Peralta",'RP',150,{SO:3,GB:12,FB:2,BB:1,'1B':1,'2B':7,HR:1},1,2),
-  cardPitcher("Randy Vasquez",'SP',180,{SO:3,GB:9,FB:5,'1B':2,'2B':4,HR:1},5,2),
-  cardPitcher("JP Sears",'SP',190,{SO:4,GB:8,FB:6,'1B':2,'2B':2,HR:1},5,1),
+  cardPitcher("Jason Adam",'RP',160,{SO:4,GB:8,LD:4,FB:3,'2B':4,HR:1},1,1),
+  cardPitcher("Walker Buehler",'SP',240,{SO:5,GB:7,LD:2,FB:3,BB:1,'1B':1,'2B':6,HR:1},5,2),
+  cardPitcher("Griffin Canning",'SP',290,{SO:5,GB:5,LD:2,FB:2,BB:2,'1B':3,'2B':1,HR:1},5,6),
+  cardPitcher("Jeremiah Estrada",'RP',220,{SO:8,GB:4,LD:2,FB:4,BB:2,'1B':2,'2B':4,HR:1},1,3),
+  cardPitcher("Kyle Hart",'RP',210,{SO:5,GB:7,LD:2,FB:4,BB:1,'2B':7,HR:1},1,3),
+  cardPitcher("Mason Miller",'RP',310,{SO:11,GB:4,LD:1,FB:2,BB:2,'1B':6,HR:1},1,5),
+  cardPitcher("Yuki Matsui",'RP',240,{SO:6,GB:3,LD:6,FB:1,BB:3,'2B':2,HR:1},1,6),
+  cardPitcher("Michael King",'SP',400,{SO:5,GB:7,LD:3,FB:3,BB:1,'1B':1,'2B':5,HR:1},6,2),
+  cardPitcher("Casey Mize",'SP',370,{SO:6,GB:5,LD:4,FB:4,'2B':7,HR:1},5,2),
+  cardPitcher("Adrian Morejon",'RP',260,{SO:7,GB:6,LD:1,FB:2,BB:1,'1B':5,'2B':4,HR:1},1,6),
+  cardPitcher("David Morgan",'RP',100,{SO:6,GB:5,LD:1,FB:2,BB:3,'1B':2,'2B':7,HR:1},1,4),
+  cardPitcher("Bradgley Rodriguez",'RP',260,{SO:6,GB:6,LD:3,FB:2,BB:1,'1B':2,'2B':6,HR:1},1,5),
+  cardPitcher("Robbie Ray",'SP',360,{SO:5,GB:5,LD:3,FB:4,BB:2,'2B':4,HR:1},5,3),
+  cardPitcher("Wandy Peralta",'RP',150,{SO:3,GB:9,LD:3,FB:2,BB:1,'1B':1,'2B':7,HR:1},1,2),
+  cardPitcher("Randy Vasquez",'SP',180,{SO:3,GB:6,LD:3,FB:5,'1B':2,'2B':4,HR:1},5,2),
+  cardPitcher("JP Sears",'SP',190,{SO:4,GB:7,LD:1,FB:6,'1B':2,'2B':2,HR:1},5,1),
 ];
 
 const COL_BATTERS = [
@@ -1981,19 +1982,19 @@ const SF_BATTERS = [
   cardBatter("Marcelo Mayer",["2B","SS"],10,13,{SO:2,GB:3,FB:2,BB:3,'1B':8,'2B':2,HR:1},9,{'2B':4,SS:2}),
 ];
 const SF_PITCHERS = [
-  cardPitcher("Logan Webb",'SP',470,{SO:5,GB:11,FB:2,'1B':3,'2B':5,HR:1},6,3),
-  cardPitcher("Adrian Houser",'SP',330,{SO:3,GB:9,FB:4,BB:1,'1B':2,'2B':3,HR:1},5,4),
-  cardPitcher("Landen Roupp",'SP',390,{SO:6,GB:8,FB:3,BB:2,'2B':7,HR:1},5,3),
-  cardPitcher("Trevor McDonald",'SP',280,{SO:4,GB:10,FB:3,BB:1,'1B':2,'2B':6,HR:1},5,2),
-  cardPitcher("Carson Whisenhunt",'SP',250,{SO:4,GB:7,FB:3,BB:3,'1B':2,'2B':3,HR:1},5,5),
-  cardPitcher("Blade Tidwell",'RP',300,{SO:5,GB:11,BB:1,'1B':3,'2B':6,HR:1},2,7),
-  cardPitcher("Sam Hentges",'RP',210,{SO:5,GB:6,FB:3,BB:4,'1B':4,'2B':4,HR:1},1,6),
-  cardPitcher("JT Brubaker",'RP',210,{SO:4,GB:10,FB:5,BB:1,'1B':2,'2B':4,HR:1},2,1),
-  cardPitcher("Keaton Winn",'RP',240,{SO:4,GB:9,FB:3,BB:2,'1B':2,'2B':6,HR:1},1,2),
-  cardPitcher("Dylan Smith",'RP',210,{SO:6,GB:8,FB:2,BB:2,'1B':2,'2B':5,HR:1},1,5),
-  cardPitcher("Ryan Walker",'RP',10,{SO:3,GB:9,FB:3,BB:2,'1B':5,'2B':3,HR:1},1,1),
-  cardPitcher("Tristan Beck",'RP',60,{SO:1,GB:11,FB:5,'1B':3,'2B':5,HR:1},1,1),
-  cardPitcher("Matt Gage",'RP',60,{SO:4,GB:9,FB:4,BB:2,'2B':1,HR:1},1,1),
+  cardPitcher("Logan Webb",'SP',470,{SO:5,GB:9,LD:2,FB:2,'1B':3,'2B':5,HR:1},6,3),
+  cardPitcher("Adrian Houser",'SP',330,{SO:3,GB:7,LD:2,FB:4,BB:1,'1B':2,'2B':3,HR:1},5,4),
+  cardPitcher("Landen Roupp",'SP',390,{SO:6,GB:7,LD:1,FB:3,BB:2,'2B':7,HR:1},5,3),
+  cardPitcher("Trevor McDonald",'SP',280,{SO:4,GB:8,LD:2,FB:3,BB:1,'1B':2,'2B':6,HR:1},5,2),
+  cardPitcher("Carson Whisenhunt",'SP',250,{SO:4,GB:5,LD:2,FB:3,BB:3,'1B':2,'2B':3,HR:1},5,5),
+  cardPitcher("Blade Tidwell",'RP',300,{SO:5,GB:4,LD:7,BB:1,'1B':3,'2B':6,HR:1},2,7),
+  cardPitcher("Sam Hentges",'RP',210,{SO:5,GB:4,LD:2,FB:3,BB:4,'1B':4,'2B':4,HR:1},1,6),
+  cardPitcher("JT Brubaker",'RP',210,{SO:4,GB:8,LD:2,FB:5,BB:1,'1B':2,'2B':4,HR:1},2,1),
+  cardPitcher("Keaton Winn",'RP',240,{SO:4,GB:7,LD:2,FB:3,BB:2,'1B':2,'2B':6,HR:1},1,2),
+  cardPitcher("Dylan Smith",'RP',210,{SO:6,GB:3,LD:5,FB:2,BB:2,'1B':2,'2B':5,HR:1},1,5),
+  cardPitcher("Ryan Walker",'RP',10,{SO:3,GB:7,LD:2,FB:3,BB:2,'1B':5,'2B':3,HR:1},1,1),
+  cardPitcher("Tristan Beck",'RP',60,{SO:1,GB:9,LD:2,FB:5,'1B':3,'2B':5,HR:1},1,1),
+  cardPitcher("Matt Gage",'RP',60,{SO:4,GB:7,LD:2,FB:4,BB:2,'2B':1,HR:1},1,1),
 ];
 
 const BOS_BATTERS = [
@@ -2017,22 +2018,22 @@ const BOS_BATTERS = [
   cardBatter("Jahmai Jones",["LF","CF","RF"],10,16,{SO:2,GB:2,FB:2,BB:4,'1B':5,'2B':3,HR:1},8,{LF:0,CF:0,RF:0}),
 ];
 const BOS_PITCHERS = [
-  cardPitcher("Brayan Bello",'SP',150,{SO:4,GB:10,FB:4,'1B':1,'2B':7,HR:1},4,1),
-  cardPitcher("Jake Bennett",'SP',450,{SO:4,GB:10,FB:4,'1B':2,'2B':6,HR:1},6,3),
-  cardPitcher("Sonny Gray",'SP',450,{SO:5,GB:7,FB:5,BB:1,'1B':1,'2B':5,HR:1},6,4),
-  cardPitcher("Ranger Suarez",'SP',430,{SO:6,GB:8,FB:3,BB:1,'1B':1,'2B':7,HR:1},5,4),
-  cardPitcher("Patrick Sandoval",'SP',140,{SO:5,GB:5,FB:3,BB:2,'1B':4,'2B':5,HR:1},5,6),
-  cardPitcher("Payton Tolle",'SP',400,{SO:7,GB:10,FB:2,'2B':6,HR:1},6,2),
-  cardPitcher("Aroldis Chapman",'RP',220,{SO:7,GB:7,FB:3,BB:2,'2B':7,HR:1},1,4),
-  cardPitcher("Alec Gamboa",'RP',290,{SO:4,GB:8,FB:4,BB:1,'1B':2,'2B':6,HR:1},2,6),
-  cardPitcher("Zack Kelly",'RP',200,{SO:5,GB:8,FB:4,BB:2,'1B':5,'2B':2,HR:1},1,3),
-  cardPitcher("Tyron Guerrero",'RP',260,{SO:6,GB:7,FB:3,BB:1,'1B':4,'2B':4,HR:1},1,6),
-  cardPitcher("Erik Miller",'RP',200,{SO:8,GB:7,FB:2,BB:3,'1B':2,'2B':4,HR:1},1,3),
-  cardPitcher("Jovani Moran",'RP',190,{SO:8,GB:11,FB:1,BB:2,'2B':1,HR:1},1,1),
-  cardPitcher("Tyler Samaniego",'RP',60,{SO:5,GB:8,FB:4,BB:1,'1B':3,'2B':5,HR:1},1,1),
-  cardPitcher("Justin Slaten",'RP',160,{SO:7,GB:7,FB:3,'1B':2,'2B':5,HR:1},1,3),
-  cardPitcher("Garrett Whitlock",'RP',230,{SO:8,GB:10,FB:2,'1B':2,'2B':4,HR:1},1,2),
-  cardPitcher("Greg Weissert",'RP',170,{SO:6,GB:9,FB:3,BB:1,'2B':4,HR:1},1,2),
+  cardPitcher("Brayan Bello",'SP',150,{SO:4,GB:9,LD:1,FB:4,'1B':1,'2B':7,HR:1},4,1),
+  cardPitcher("Jake Bennett",'SP',450,{SO:4,GB:7,LD:3,FB:4,'1B':2,'2B':6,HR:1},6,3),
+  cardPitcher("Sonny Gray",'SP',450,{SO:5,GB:6,LD:1,FB:5,BB:1,'1B':1,'2B':5,HR:1},6,4),
+  cardPitcher("Ranger Suarez",'SP',430,{SO:6,GB:6,LD:2,FB:3,BB:1,'1B':1,'2B':7,HR:1},5,4),
+  cardPitcher("Patrick Sandoval",'SP',140,{SO:5,GB:3,LD:2,FB:3,BB:2,'1B':4,'2B':5,HR:1},5,6),
+  cardPitcher("Payton Tolle",'SP',400,{SO:7,GB:5,LD:5,FB:2,'2B':6,HR:1},6,2),
+  cardPitcher("Aroldis Chapman",'RP',220,{SO:7,GB:5,LD:2,FB:3,BB:2,'2B':7,HR:1},1,4),
+  cardPitcher("Alec Gamboa",'RP',290,{SO:4,GB:6,LD:2,FB:4,BB:1,'1B':2,'2B':6,HR:1},2,6),
+  cardPitcher("Zack Kelly",'RP',200,{SO:5,GB:7,LD:1,FB:4,BB:2,'1B':5,'2B':2,HR:1},1,3),
+  cardPitcher("Tyron Guerrero",'RP',260,{SO:6,GB:6,LD:1,FB:3,BB:1,'1B':4,'2B':4,HR:1},1,6),
+  cardPitcher("Erik Miller",'RP',200,{SO:8,GB:5,LD:2,FB:2,BB:3,'1B':2,'2B':4,HR:1},1,3),
+  cardPitcher("Jovani Moran",'RP',190,{SO:8,GB:7,LD:4,FB:1,BB:2,'2B':1,HR:1},1,1),
+  cardPitcher("Tyler Samaniego",'RP',60,{SO:5,GB:6,LD:2,FB:4,BB:1,'1B':3,'2B':5,HR:1},1,1),
+  cardPitcher("Justin Slaten",'RP',160,{SO:7,GB:6,LD:1,FB:3,'1B':2,'2B':5,HR:1},1,3),
+  cardPitcher("Garrett Whitlock",'RP',230,{SO:8,GB:6,LD:4,FB:2,'1B':2,'2B':4,HR:1},1,2),
+  cardPitcher("Greg Weissert",'RP',170,{SO:6,GB:7,LD:2,FB:3,BB:1,'2B':4,HR:1},1,2),
 ];
 
 const BAL_BATTERS = [
@@ -2050,39 +2051,39 @@ const BAL_BATTERS = [
   cardBatter("Leody Taveras",['LF','CF','RF'],50,17,{SO:2,GB:2,FB:3,BB:4,'1B':6,'2B':1,'3B':1,HR:1},9,{LF:0,CF:0,RF:0}),
 ];
 const BAL_PITCHERS = [
-  cardPitcher("Chris Bassitt",'SP',240,{SO:3,GB:8,FB:3,BB:2,'1B':3,'2B':5,HR:1},5,5),
-  cardPitcher("Kyle Bradish",'SP',260,{SO:6,GB:11,FB:1,BB:1,'2B':7,HR:1},6,3),
-  cardPitcher("Shane Baz",'SP',370,{SO:5,GB:7,FB:4,BB:1,'1B':2,'2B':7,HR:1},6,4),
-  cardPitcher("Yennier Cano",'RP',270,{SO:5,GB:9,FB:3,BB:1,'1B':2,'2B':6,HR:1},1,5),
-  cardPitcher("Keegan Akin",'RP',120,{SO:3,GB:8,FB:6,'1B':3,'2B':6,HR:1},1,2),
-  cardPitcher("Brandon Young",'SP',380,{SO:4,GB:9,FB:4,BB:1,'1B':1,'2B':6,HR:1},6,3),
-  cardPitcher("Trevor Rogers",'SP',310,{SO:5,GB:11,FB:2,'1B':1,'2B':7,HR:1},5,2),
-  cardPitcher("Cade Povich",'SP',150,{SO:4,GB:9,FB:3,BB:1,'1B':2,'2B':1,HR:1},4,3),
-  cardPitcher("Trey Gibson",'SP',110,{SO:4,GB:8,FB:2,BB:3,'1B':2,'2B':1,HR:1},4,4),
-  cardPitcher("Rico Garcia",'RP',270,{SO:6,GB:9,FB:2,BB:1,'1B':1,'2B':1,HR:1},1,6),
+  cardPitcher("Chris Bassitt",'SP',240,{SO:3,GB:6,LD:2,FB:3,BB:2,'1B':3,'2B':5,HR:1},5,5),
+  cardPitcher("Kyle Bradish",'SP',260,{SO:6,GB:8,LD:3,FB:1,BB:1,'2B':7,HR:1},6,3),
+  cardPitcher("Shane Baz",'SP',370,{SO:5,GB:5,LD:2,FB:4,BB:1,'1B':2,'2B':7,HR:1},6,4),
+  cardPitcher("Yennier Cano",'RP',270,{SO:5,GB:8,LD:1,FB:3,BB:1,'1B':2,'2B':6,HR:1},1,5),
+  cardPitcher("Keegan Akin",'RP',120,{SO:3,GB:5,LD:3,FB:6,'1B':3,'2B':6,HR:1},1,2),
+  cardPitcher("Brandon Young",'SP',380,{SO:4,GB:6,LD:3,FB:4,BB:1,'1B':1,'2B':6,HR:1},6,3),
+  cardPitcher("Trevor Rogers",'SP',310,{SO:5,GB:6,LD:5,FB:2,'1B':1,'2B':7,HR:1},5,2),
+  cardPitcher("Cade Povich",'SP',150,{SO:4,GB:6,LD:3,FB:3,BB:1,'1B':2,'2B':1,HR:1},4,3),
+  cardPitcher("Trey Gibson",'SP',110,{SO:4,GB:7,LD:1,FB:2,BB:3,'1B':2,'2B':1,HR:1},4,4),
+  cardPitcher("Rico Garcia",'RP',270,{SO:6,GB:5,LD:4,FB:2,BB:1,'1B':1,'2B':1,HR:1},1,6),
   cardPitcher("Ryan Helsley",'RP',180,{SO:8,GB:6,FB:2,BB:2,'1B':1,'2B':1,HR:1},1,4),
-  cardPitcher("Anthony Nunez",'RP',190,{SO:6,GB:7,FB:3,BB:2,'1B':2,'2B':4,HR:1},1,4),
-  cardPitcher("Andrew Kittredge",'RP',160,{SO:4,GB:9,FB:5,'1B':1,'2B':5,HR:1},1,2),
-  cardPitcher("Alex Hoppe",'RP',180,{SO:7,GB:7,FB:3,BB:1,'1B':1,'2B':7,HR:1},1,3),
-  cardPitcher("Cam Sanders",'RP',110,{SO:7,GB:8,FB:2,BB:5,'1B':2,'2B':2,HR:1},1,1),
-  cardPitcher("Josh Walker",'RP',190,{SO:5,GB:7,FB:6,'1B':1,'2B':4,HR:1},1,3),
-  cardPitcher("Grant Wolfram",'RP',110,{SO:7,GB:7,FB:3,BB:1,'2B':8,HR:1},1,2),
+  cardPitcher("Anthony Nunez",'RP',190,{SO:6,GB:5,LD:2,FB:3,BB:2,'1B':2,'2B':4,HR:1},1,4),
+  cardPitcher("Andrew Kittredge",'RP',160,{SO:4,GB:7,LD:2,FB:5,'1B':1,'2B':5,HR:1},1,2),
+  cardPitcher("Alex Hoppe",'RP',180,{SO:7,GB:6,LD:1,FB:3,BB:1,'1B':1,'2B':7,HR:1},1,3),
+  cardPitcher("Cam Sanders",'RP',110,{SO:7,GB:5,LD:3,FB:2,BB:5,'1B':2,'2B':2,HR:1},1,1),
+  cardPitcher("Josh Walker",'RP',190,{SO:5,GB:6,LD:1,FB:6,'1B':1,'2B':4,HR:1},1,3),
+  cardPitcher("Grant Wolfram",'RP',110,{SO:7,GB:6,LD:1,FB:3,BB:1,'2B':8,HR:1},1,2),
 ];
 const COL_PITCHERS = [
-  cardPitcher("Ryan Feltner",'SP',170,{SO:4,GB:10,FB:2,BB:1,'1B':1,'2B':2,HR:1},5,3),
-  cardPitcher("Kyle Freeland",'SP',170,{SO:4,GB:8,FB:4,'1B':2,'2B':2,HR:1},6,3),
-  cardPitcher("Michael Lorenzen",'SP',70,{SO:3,GB:7,FB:4,BB:1,'1B':4,'2B':3,HR:1},5,4),
-  cardPitcher("Tomoyuki Sugano",'SP',230,{SO:3,GB:8,FB:5,'1B':2,'2B':2,HR:1},5,4),
-  cardPitcher("Jose Quintana",'SP',70,{SO:2,GB:10,FB:4,BB:1,'1B':2,'2B':4,HR:1},5,2),
-  cardPitcher("Zach Agnos",'RP',80,{SO:3,GB:7,FB:6,BB:1,'1B':2,'2B':7,HR:1},2,2),
-  cardPitcher("Brennan Bernardino",'RP',180,{SO:4,GB:9,FB:4,BB:1,'1B':1,'2B':7,HR:1},1,3),
-  cardPitcher("Blas Castano",'RP',70,{SO:5,GB:8,FB:3,BB:1,'1B':2,'2B':1,HR:1},2,2),
-  cardPitcher("Chase Dollander",'RP',200,{SO:6,GB:9,FB:2,BB:1,'1B':1,'2B':4,HR:1},2,3),
-  cardPitcher("Jimmy Herget",'RP',10,{SO:6,GB:7,FB:3,BB:2,'2B':5,HR:1},1,1),
-  cardPitcher("Tanner Gordon",'RP',120,{SO:5,GB:7,FB:5,'1B':1,'2B':2,HR:1},3,2),
-  cardPitcher("Juan Mejia",'RP',90,{SO:6,GB:8,FB:3,BB:2,'1B':4,'2B':3,HR:1},1,1),
-  cardPitcher("Jaden Hill",'RP',40,{SO:6,GB:7,FB:3,BB:3,'1B':1,'2B':6,HR:1},1,1),
-  cardPitcher("Jordan Romano",'RP',160,{SO:6,GB:5,FB:3,BB:3,'1B':3,'2B':6,HR:1},1,5),
+  cardPitcher("Ryan Feltner",'SP',170,{SO:4,GB:7,LD:3,FB:2,BB:1,'1B':1,'2B':2,HR:1},5,3),
+  cardPitcher("Kyle Freeland",'SP',170,{SO:4,GB:7,LD:1,FB:4,'1B':2,'2B':2,HR:1},6,3),
+  cardPitcher("Michael Lorenzen",'SP',70,{SO:3,GB:6,LD:1,FB:4,BB:1,'1B':4,'2B':3,HR:1},5,4),
+  cardPitcher("Tomoyuki Sugano",'SP',230,{SO:3,GB:6,LD:2,FB:5,'1B':2,'2B':2,HR:1},5,4),
+  cardPitcher("Jose Quintana",'SP',70,{SO:2,GB:6,LD:4,FB:4,BB:1,'1B':2,'2B':4,HR:1},5,2),
+  cardPitcher("Zach Agnos",'RP',80,{SO:3,GB:6,LD:1,FB:6,BB:1,'1B':2,'2B':7,HR:1},2,2),
+  cardPitcher("Brennan Bernardino",'RP',180,{SO:4,GB:7,LD:2,FB:4,BB:1,'1B':1,'2B':7,HR:1},1,3),
+  cardPitcher("Blas Castano",'RP',70,{SO:5,GB:7,LD:1,FB:3,BB:1,'1B':2,'2B':1,HR:1},2,2),
+  cardPitcher("Chase Dollander",'RP',200,{SO:6,GB:6,LD:3,FB:2,BB:1,'1B':1,'2B':4,HR:1},2,3),
+  cardPitcher("Jimmy Herget",'RP',10,{SO:6,GB:3,LD:4,FB:3,BB:2,'2B':5,HR:1},1,1),
+  cardPitcher("Tanner Gordon",'RP',120,{SO:5,GB:5,LD:2,FB:5,'1B':1,'2B':2,HR:1},3,2),
+  cardPitcher("Juan Mejia",'RP',90,{SO:6,GB:6,LD:2,FB:3,BB:2,'1B':4,'2B':3,HR:1},1,1),
+  cardPitcher("Jaden Hill",'RP',40,{SO:6,GB:5,LD:2,FB:3,BB:3,'1B':1,'2B':6,HR:1},1,1),
+  cardPitcher("Jordan Romano",'RP',160,{SO:6,GB:3,LD:2,FB:3,BB:3,'1B':3,'2B':6,HR:1},1,5),
 ];
 
 const TB_BATTERS = [
@@ -2102,24 +2103,23 @@ const TB_BATTERS = [
   cardBatter("Chandler Simpson",['LF','RF'],240,22,{SO:1,GB:4,FB:1,'1B':13,'2B':1,'3B':2,HR:1},10,{LF:2,RF:2}),
 ];
 const TB_PITCHERS = [
-  cardPitcher("Griffin Jax",'SP',250,{SO:7,GB:8,FB:4,'2B':4,HR:1},5,1),
-  cardPitcher("Shane McClanahan",'SP',450,{SO:5,GB:8,FB:4,BB:1,'1B':2,'2B':6,HR:1},5,4),
-  cardPitcher("Steven Matz",'SP',240,{SO:4,GB:8,FB:5,BB:1,'1B':1,'2B':1,HR:1},4,3),
-  cardPitcher("Nick Martinez",'SP',420,{SO:3,GB:10,FB:4,'1B':2,'2B':4,HR:1},6,4),
-  cardPitcher("Drew Rasmussen",'SP',510,{SO:6,GB:9,FB:3,'1B':2,'2B':4,HR:1},6,4),
-  cardPitcher("Freddy Peralta",'SP',220,{SO:5,GB:9,FB:2,BB:1,'1B':2,'2B':3,HR:1},5,3),
-  cardPitcher("Bryan Baker",'RP',300,{SO:7,GB:8,FB:3,BB:1,'1B':1,'2B':6,HR:1},1,5),
-  cardPitcher("Hunter Bigge",'RP',160,{SO:4,GB:12,FB:2,BB:8,HR:1},1,1),
-  cardPitcher("Cam Booser",'RP',260,{SO:8,GB:9,FB:1,'1B':2,HR:1},1,5),
-  cardPitcher("Garrett Cleavinger",'RP',100,{SO:9,GB:7,FB:2,BB:1,'2B':6,HR:1},1,1),
-  cardPitcher("Mason Englert",'RP',80,{SO:5,GB:7,FB:5,'1B':1,'2B':2,HR:1},2,2),
-  cardPitcher("Casey Legumina",'RP',170,{SO:4,GB:8,FB:5,BB:1,'1B':1,'2B':7,HR:1},1,3),
+  cardPitcher("Griffin Jax",'SP',250,{SO:7,GB:7,LD:1,FB:4,'2B':4,HR:1},5,1),
+  cardPitcher("Shane McClanahan",'SP',450,{SO:5,GB:6,LD:2,FB:4,BB:1,'1B':2,'2B':6,HR:1},5,4),
+  cardPitcher("Steven Matz",'SP',240,{SO:4,GB:6,LD:2,FB:5,BB:1,'1B':1,'2B':1,HR:1},4,3),
+  cardPitcher("Nick Martinez",'SP',420,{SO:3,GB:6,LD:4,FB:4,'1B':2,'2B':4,HR:1},6,4),
+  cardPitcher("Drew Rasmussen",'SP',510,{SO:6,GB:6,LD:3,FB:3,'1B':2,'2B':4,HR:1},6,4),
+  cardPitcher("Freddy Peralta",'SP',220,{SO:5,GB:6,LD:3,FB:2,BB:1,'1B':2,'2B':3,HR:1},5,3),
+  cardPitcher("Bryan Baker",'RP',300,{SO:7,GB:5,LD:3,FB:3,BB:1,'1B':1,'2B':6,HR:1},1,5),
+  cardPitcher("Hunter Bigge",'RP',160,{SO:4,GB:6,LD:6,FB:2,BB:8,HR:1},1,1),
+  cardPitcher("Cam Booser",'RP',260,{SO:8,GB:3,LD:6,FB:1,'1B':2,HR:1},1,5),
+  cardPitcher("Garrett Cleavinger",'RP',100,{SO:9,GB:5,LD:2,FB:2,BB:1,'2B':6,HR:1},1,1),
+  cardPitcher("Mason Englert",'RP',80,{SO:5,GB:4,LD:3,FB:5,'1B':1,'2B':2,HR:1},2,2),
+  cardPitcher("Casey Legumina",'RP',170,{SO:4,GB:6,LD:2,FB:5,BB:1,'1B':1,'2B':7,HR:1},1,3),
   cardPitcher("Kevin Kelly",'RP',250,{SO:5,GB:9,FB:5,'1B':1,'2B':6,HR:1},1,3),
-  cardPitcher("Chris Roycroft",'RP',10,{SO:3,GB:6,FB:4,BB:2,'1B':4,HR:1},1,5),
-  cardPitcher("Cole Sulser",'RP',150,{SO:6,GB:8,FB:4,'2B':6,HR:1},1,2),
-  cardPitcher("Ian Seymour",'RP',260,{SO:6,GB:6,FB:4,BB:1,'1B':2,'2B':1,HR:1},2,6),
-  cardPitcher("Jesse Scholtens",'RP',140,{SO:4,GB:10,FB:2,BB:1,'1B':2,'2B':1,HR:1},2,3),
-  cardPitcher("Tyler Wells",'RP',220,{SO:6,GB:8,FB:3,BB:1,'1B':1,'2B':2,HR:1},1,5),
+  cardPitcher("Cole Sulser",'RP',150,{SO:6,GB:6,LD:2,FB:4,'2B':6,HR:1},1,2),
+  cardPitcher("Ian Seymour",'RP',260,{SO:6,GB:3,LD:3,FB:4,BB:1,'1B':2,'2B':1,HR:1},2,6),
+  cardPitcher("Jesse Scholtens",'RP',140,{SO:4,GB:6,LD:4,FB:2,BB:1,'1B':2,'2B':1,HR:1},2,3),
+  cardPitcher("Tyler Wells",'RP',220,{SO:6,GB:3,LD:5,FB:3,BB:1,'1B':1,'2B':2,HR:1},1,5),
 ];
 
 const TOR_BATTERS = [
@@ -2138,23 +2138,23 @@ const TOR_BATTERS = [
   cardBatter("George Springer",[],90,13,{SO:2,GB:3,FB:2,BB:4,'1B':6,'2B':2,HR:1},10,{}),
 ];
 const TOR_PITCHERS = [
-  cardPitcher("Dylan Cease",'SP',470,{SO:10,GB:8,FB:1,BB:4,'1B':2,'2B':1,HR:1},6,2),
-  cardPitcher("Shane Bieber",'SP',90,{SO:4,GB:10,FB:2,BB:1,'1B':2,'2B':1,HR:1},5,2),
-  cardPitcher("Spencer Arrighetti",'SP',330,{SO:5,GB:8,FB:3,BB:3,'1B':1,'2B':3,HR:1},5,3),
-  cardPitcher("Patrick Corbin",'SP',250,{SO:4,GB:7,FB:3,BB:1,'1B':4,'2B':2,HR:1},5,6),
-  cardPitcher("Mason Fluharty",'RP',160,{SO:7,GB:6,FB:5,BB:1,'1B':2,'2B':4,HR:1},1,2),
-  cardPitcher("Braydon Fisher",'RP',190,{SO:5,GB:9,FB:3,BB:2,'1B':1,'2B':4,HR:1},1,3),
-  cardPitcher("Joe Mantiply",'RP',220,{SO:5,GB:7,FB:4,BB:1,'1B':3,'2B':6,HR:1},1,5),
+  cardPitcher("Dylan Cease",'SP',470,{SO:10,GB:5,LD:3,FB:1,BB:4,'1B':2,'2B':1,HR:1},6,2),
+  cardPitcher("Shane Bieber",'SP',90,{SO:4,GB:7,LD:3,FB:2,BB:1,'1B':2,'2B':1,HR:1},5,2),
+  cardPitcher("Spencer Arrighetti",'SP',330,{SO:5,GB:5,LD:3,FB:3,BB:3,'1B':1,'2B':3,HR:1},5,3),
+  cardPitcher("Patrick Corbin",'SP',250,{SO:4,GB:5,LD:2,FB:3,BB:1,'1B':4,'2B':2,HR:1},5,6),
+  cardPitcher("Mason Fluharty",'RP',160,{SO:7,GB:4,LD:2,FB:5,BB:1,'1B':2,'2B':4,HR:1},1,2),
+  cardPitcher("Braydon Fisher",'RP',190,{SO:5,GB:6,LD:3,FB:3,BB:2,'1B':1,'2B':4,HR:1},1,3),
+  cardPitcher("Joe Mantiply",'RP',220,{SO:5,GB:6,LD:1,FB:4,BB:1,'1B':3,'2B':6,HR:1},1,5),
   cardPitcher("Brendon Little",'RP',10,{SO:8,GB:4,FB:1,BB:4,'1B':1,'2B':2,HR:1},1,1),
-  cardPitcher("Max Scherzer",'SP',40,{SO:4,GB:11,FB:1,BB:1,'1B':2,'2B':1,HR:1},4,2),
-  cardPitcher("Jose Soriano",'SP',440,{SO:6,GB:8,FB:2,BB:2,'1B':4,'2B':3,HR:1},6,4),
-  cardPitcher("Jameson Taillon",'SP',210,{SO:5,GB:8,FB:4,BB:1,'2B':1,HR:1},5,3),
-  cardPitcher("Trey Yesavage",'SP',480,{SO:5,GB:7,FB:4,BB:2,'1B':1,'2B':3,HR:1},5,6),
-  cardPitcher("Simeon Woods Richardson",'SP',140,{SO:2,GB:8,FB:4,BB:2,'1B':3,'2B':2,HR:1},4,5),
-  cardPitcher("Spencer Miles",'RP',260,{SO:6,GB:10,FB:2,'1B':2,'2B':6,HR:1},2,3),
-  cardPitcher("Tyler Rogers",'RP',280,{SO:2,GB:11,FB:3,BB:1,'1B':5,'2B':4,HR:1},1,6),
-  cardPitcher("Paul Sewald",'RP',180,{SO:6,GB:6,FB:5,BB:1,'2B':1,HR:1},1,5),
-  cardPitcher("Louis Varland",'RP',300,{SO:7,GB:7,FB:3,BB:1,'1B':4,'2B':4,HR:1},1,6),
+  cardPitcher("Max Scherzer",'SP',40,{SO:4,GB:5,LD:6,FB:1,BB:1,'1B':2,'2B':1,HR:1},4,2),
+  cardPitcher("Jose Soriano",'SP',440,{SO:6,GB:7,LD:1,FB:2,BB:2,'1B':4,'2B':3,HR:1},6,4),
+  cardPitcher("Jameson Taillon",'SP',210,{SO:5,GB:5,LD:3,FB:4,BB:1,'2B':1,HR:1},5,3),
+  cardPitcher("Trey Yesavage",'SP',480,{SO:5,GB:4,LD:3,FB:4,BB:2,'1B':1,'2B':3,HR:1},5,6),
+  cardPitcher("Simeon Woods Richardson",'SP',140,{SO:2,GB:5,LD:3,FB:4,BB:2,'1B':3,'2B':2,HR:1},4,5),
+  cardPitcher("Spencer Miles",'RP',260,{SO:6,GB:8,LD:2,FB:2,'1B':2,'2B':6,HR:1},2,3),
+  cardPitcher("Tyler Rogers",'RP',280,{SO:2,GB:9,LD:2,FB:3,BB:1,'1B':5,'2B':4,HR:1},1,6),
+  cardPitcher("Paul Sewald",'RP',180,{SO:6,GB:2,LD:4,FB:5,BB:1,'2B':1,HR:1},1,5),
+  cardPitcher("Louis Varland",'RP',300,{SO:7,GB:6,LD:1,FB:3,BB:1,'1B':4,'2B':4,HR:1},1,6),
 ];
 
 // Twins batters not yet submitted — team registered pitching-only for now, per
@@ -2358,21 +2358,21 @@ const TEX_PITCHERS = [
 
 // Texas Rangers batters — first batch
 const TEX_BATTERS = [
-  cardBatter("Joc Pederson",['1B'],270,9,{SO:1,GB:2,FB:2,BB:6,'1B':5,'2B':1,HR:1},9,{'1B':0}),
+  cardBatter("Joc Pederson",['1B'],270,9,{SO:1,GB:1,FB:2,BB:6,'1B':5,'2B':1,HR:1},9,{'1B':0}),
   cardBatter("Alejandro Osuna",['LF','CF','RF'],40,16,{SO:2,GB:4,FB:2,BB:4,'1B':8,'2B':2,HR:1},12,{LF:0,CF:0,RF:0}),
-  cardBatter("Brandon Nimmo",['LF','RF'],250,14,{SO:2,GB:2,FB:3,BB:3,'1B':7,'2B':2,HR:1},14,{LF:1,RF:1}),
-  cardBatter("Wyatt Langford",['LF','CF','RF'],310,16,{SO:2,GB:1,FB:2,BB:3,'1B':7,'2B':2,HR:1},16,{LF:2,CF:2,RF:2}),
-  cardBatter("Evan Carter",['CF','LF','RF'],30,18,{SO:2,GB:2,FB:3,BB:6,'1B':5,'2B':1,HR:1},18,{CF:3,LF:2,RF:2}),
-  cardBatter("Corey Seager",['SS'],140,8,{SO:2,GB:2,FB:3,BB:6,'1B':3,'2B':2,HR:1},8,{SS:3}),
-  cardBatter("Nicky Lopez",['2B'],10,15,{SO:2,GB:4,FB:1,BB:1,'1B':13,'3B':1,HR:1},15,{'2B':3}),
-  cardBatter("Josh Jung",['3B'],280,9,{SO:1,GB:1,FB:2,BB:4,'1B':8,'2B':3,HR:1},9,{'3B':1}),
-  cardBatter("Justin Foscue",['2B'],350,12,{SO:1,GB:1,FB:2,BB:3,'1B':7,'2B':3,HR:1},12,{'2B':4}),
-  cardBatter("Ezequiel Duran",['3B','SS','LF','RF'],290,17,{SO:3,GB:3,FB:2,BB:2,'1B':7,'2B':2,HR:1},17,{'3B':3,SS:6,LF:1,RF:1}),
-  cardBatter("Jake Burger",['1B'],130,11,{SO:3,GB:3,FB:2,BB:3,'1B':5,'2B':2,HR:1},11,{'1B':0}),
-  cardBatter("Danny Jansen",['C'],10,11,{SO:3,GB:2,FB:4,BB:6,'1B':2,'2B':2,HR:1},11,{C:6}),
-  cardBatter("Kyle Higashioka",['C'],90,8,{SO:2,GB:2,FB:2,BB:5,'1B':6,'2B':1,HR:1},8,{C:6}),
-  cardBatter("Elias Diaz",['C'],20,8,{SO:2,GB:2,FB:2,'1B':6,'2B':5,HR:1},8,{C:6}),
-  cardBatter("Logan O'Hoppe",['C'],10,11,{SO:1,GB:1,FB:1,BB:3,'1B':12,'2B':1,HR:1},11,{C:6}),
+  cardBatter("Brandon Nimmo",['LF','RF'],250,14,{SO:2,GB:2,FB:3,BB:3,'1B':7,'2B':2,HR:1},11,{LF:1,RF:1}),
+  cardBatter("Wyatt Langford",['LF','CF','RF'],310,16,{SO:2,GB:1,FB:2,BB:3,'1B':7,'2B':2,HR:1},9,{LF:2,CF:2,RF:2}),
+  cardBatter("Evan Carter",['CF','LF','RF'],30,18,{SO:2,GB:2,FB:3,BB:6,'1B':5,'2B':1,HR:1},9,{CF:3,LF:2,RF:2}),
+  cardBatter("Corey Seager",['SS'],140,8,{SO:2,GB:2,FB:3,BB:6,'1B':3,'2B':2,HR:1},10,{SS:3}),
+  cardBatter("Nicky Lopez",['2B'],10,15,{SO:2,GB:4,FB:1,BB:1,'1B':13,'3B':1,HR:1},9,{'2B':3}),
+  cardBatter("Josh Jung",['3B'],280,9,{SO:1,GB:1,FB:2,BB:4,'1B':8,'2B':3,HR:1},10,{'3B':1}),
+  cardBatter("Justin Foscue",['2B'],350,12,{SO:1,GB:1,FB:2,BB:3,'1B':7,'2B':3,HR:1},9,{'2B':4}),
+  cardBatter("Ezequiel Duran",['3B','SS','LF','RF'],290,17,{SO:3,GB:3,FB:2,BB:2,'1B':7,'2B':2,HR:1},11,{'3B':3,SS:6,LF:1,RF:1}),
+  cardBatter("Jake Burger",['1B'],130,11,{SO:3,GB:3,FB:2,BB:3,'1B':5,'2B':2,HR:1},10,{'1B':0}),
+  cardBatter("Danny Jansen",['C'],10,11,{SO:3,GB:2,FB:4,BB:6,'1B':2,'2B':2,HR:1},9,{C:6}),
+  cardBatter("Kyle Higashioka",['C'],90,8,{SO:2,GB:2,FB:2,BB:5,'1B':6,'2B':1,HR:1},9,{C:6}),
+  cardBatter("Elias Diaz",['C'],20,8,{SO:2,GB:2,FB:2,'1B':6,'2B':5,HR:1},7,{C:6}),
+  cardBatter("Logan O'Hoppe",['C'],10,11,{SO:1,GB:1,FB:1,BB:3,'1B':12,'2B':1,HR:1},7,{C:6}),
 ];
 
 // Temporary placeholder rosters for real teams not yet card-verified (Angels, Athletics, Mariners —
@@ -2410,9 +2410,108 @@ function buildPlaceholderPool(prefix){
   ];
   return {batters, pitchers};
 }
-const LAA_POOL = buildPlaceholderPool('Angels');
-const ATH_POOL = buildPlaceholderPool('Athletics');
+const LAA_BATTERS = [
+  cardBatter("Tyler Heineman",['C'],10,9,{SO:2,GB:7,FB:3,BB:1,'1B':7,'3B':1,HR:1},8,{C:10}),
+  cardBatter("Adam Frazier",['2B','LF','RF'],140,11,{SO:3,GB:3,FB:2,BB:3,'1B':6,'2B':3,'3B':1,HR:1},11,{'2B':3,LF:1,RF:1}),
+  cardBatter("Vaughn Grissom",['3B','2B','1B'],150,11,{SO:1,GB:2,FB:2,BB:3,'1B':8,'2B':3,HR:1},9,{'3B':1,'2B':2,'1B':0}),
+  cardBatter("Denzer Guzman",['3B'],40,13,{SO:2,GB:2,FB:3,BB:1,'1B':8,'2B':2,HR:1},8,{'3B':3}),
+  cardBatter("Yoan Moncada",['3B'],10,11,{SO:1,GB:1,FB:1,BB:10,'1B':5,'3B':1,HR:1},8,{'3B':0}),
+  cardBatter("Zach Neto",['SS'],210,16,{SO:3,GB:1,FB:3,BB:4,'1B':5,'2B':2,HR:1},10,{SS:2}),
+  cardBatter("Oswald Peraza",['SS','2B','3B'],70,18,{SO:3,GB:3,FB:2,BB:2,'1B':7,'2B':2,HR:1},9,{SS:5,'2B':2,'3B':2}),
+  cardBatter("Nolan Schanuel",['1B'],190,8,{SO:1,GB:3,FB:2,BB:4,'1B':8,'2B':2,HR:1},11,{'1B':1}),
+  cardBatter("Josh Lowe",['LF','CF','RF'],50,15,{SO:3,GB:2,FB:2,BB:3,'1B':6,'2B':1,HR:1},8,{LF:1,CF:1,RF:1}),
+  cardBatter("Wade Meckler",['LF','RF'],230,17,{SO:1,GB:2,FB:1,BB:4,'1B':10,'2B':2,HR:1},10,{LF:1,RF:1}),
+  cardBatter("Jose Siri",['LF','CF','RF'],230,20,{SO:2,GB:1,FB:1,BB:3,'1B':7,'2B':3,HR:1},8,{LF:1,CF:1,RF:1}),
+  cardBatter("Mike Trout",['CF','LF','RF'],310,16,{SO:2,GB:1,FB:4,BB:7,'1B':4,'2B':1,HR:1},13,{CF:1,LF:0,RF:0}),
+  cardBatter("Moises Ballesteros",['C'],10,8,{SO:2,GB:3,FB:3,BB:3,'1B':7,'2B':1,HR:1},9,{C:6}),
+];
+const LAA_PITCHERS = [
+  cardPitcher("Reid Detmers",'SP',430,{SO:7,GB:5,FB:3,LD:3,'1B':2,'2B':4,HR:1},6,3),
+  cardPitcher("Ryan Johnson",'SP',230,{SO:4,GB:5,FB:5,LD:2,BB:2,'1B':1,'2B':1,HR:1},5,3),
+  cardPitcher("Jack Kochanowicz",'SP',210,{SO:4,GB:9,FB:2,LD:2,BB:2,'1B':3,'2B':4,HR:1},5,1),
+  cardPitcher("Grayson Rodriguez",'SP',90,{SO:5,GB:5,FB:4,LD:2,BB:1,'1B':2,'2B':5,HR:1},5,2),
+  cardPitcher("Walbert Urena",'SP',440,{SO:5,GB:7,FB:3,LD:1,BB:3,'1B':1,'2B':6,HR:1},5,4),
+  cardPitcher("Yusei Kikuchi",'SP',20,{SO:6,GB:5,FB:3,LD:3,BB:1,'2B':8,HR:1},4,1),
+  cardPitcher("Shaun Anderson",'RP',20,{SO:4,GB:8,FB:2,LD:2,BB:1,'1B':4,HR:1},2,1),
+  cardPitcher("Sam Bachman",'RP',200,{SO:5,GB:6,FB:4,LD:1,BB:3,'2B':3,HR:1},1,4),
+  cardPitcher("Mitch Farris",'RP',40,{SO:6,GB:6,FB:3,LD:2,BB:1,'2B':3,HR:1},2,1),
+  cardPitcher("Jose Fermin",'RP',180,{SO:7,GB:6,FB:3,LD:1,BB:2,'2B':4,HR:1},1,3),
+  cardPitcher("Samy Natera Jr.",'RP',280,{SO:9,GB:2,FB:3,LD:3,BB:2,'2B':7,HR:1},1,6),
+  cardPitcher("Ryan Watson",'RP',170,{SO:4,GB:6,FB:3,LD:3,BB:1,'1B':2,'2B':4,HR:1},1,4),
+];
 const SEA_POOL = buildPlaceholderPool('Mariners');
+
+const ATH_BATTERS = [
+  cardBatter("Jonah Heim",['C'],20,8,{SO:2,GB:3,FB:2,BB:3,'1B':4,'2B':3,HR:1},8,{C:2}),
+  cardBatter("Shea Langeliers",['C'],390,14,{SO:2,GB:2,FB:2,BB:3,'1B':6,'2B':2,HR:1},10,{C:7}),
+  cardBatter("Zack Gelof",['LF','CF','RF','2B','3B'],340,18,{SO:2,GB:2,FB:1,BB:3,'1B':7,'2B':2,HR:1},9,{LF:2,CF:2,RF:2,'2B':2,'3B':2}),
+  cardBatter("Darell Hernaiz",['SS','2B','3B'],50,15,{SO:2,GB:3,FB:3,BB:4,'1B':8,'2B':1,HR:1},11,{SS:2,'2B':3,'3B':3}),
+  cardBatter("Nick Kurtz",['1B'],370,12,{SO:2,GB:1,FB:1,BB:9,'1B':3,'2B':2,HR:1},11,{'1B':0}),
+  cardBatter("Jeff McNeil",['1B','2B'],160,11,{SO:1,GB:2,FB:2,BB:2,'1B':10,'2B':2,HR:1},9,{'1B':1,'2B':2}),
+  cardBatter("Max Muncy",['3B'],100,14,{SO:2,GB:1,FB:1,BB:4,'1B':7,'2B':2,'3B':1,HR:1},8,{'3B':0}),
+  cardBatter("Donovan Walton",['SS','2B','3B'],300,11,{SO:1,GB:2,FB:3,BB:5,'1B':5,'2B':3,HR:1},11,{SS:3,'2B':1,'3B':1}),
+  cardBatter("Tommy White",['1B','3B'],10,10,{SO:1,GB:2,FB:2,'1B':13,'2B':1,HR:1},8,{'1B':0,'3B':0}),
+  cardBatter("Alika Williams",['2B','SS'],180,12,{SO:3,GB:3,FB:2,'1B':7,'2B':5,HR:1},10,{'2B':4,SS:2}),
+  cardBatter("Lawrence Butler",['LF','CF','RF'],110,13,{SO:2,GB:2,FB:2,BB:5,'1B':7,'2B':1,HR:1},10,{LF:0,CF:0,RF:0}),
+  cardBatter("Henry Bolte",['CF','LF','RF'],260,22,{SO:2,GB:2,FB:1,BB:4,'1B':9,'2B':1,HR:1},10,{CF:2,LF:1,RF:1}),
+  cardBatter("Jacob Wilson",['SS'],170,12,{SO:1,GB:3,FB:2,'1B':11,'2B':2,HR:1},9,{SS:6}),
+  cardBatter("Brent Rooker",['DH'],90,13,{SO:2,GB:1,FB:2,BB:5,'1B':6,HR:1},8,{}),
+  cardBatter("Tyler Soderstrom",['LF','RF'],280,12,{SO:1,GB:2,FB:2,BB:5,'1B':5,'2B':3,HR:1},10,{LF:0,RF:0}),
+  cardBatter("Carlos Cortes",['LF','RF'],160,10,{SO:1,GB:3,FB:2,BB:4,'1B':6,'2B':3,HR:1},10,{LF:0,RF:0}),
+];
+const ATH_PITCHERS = [
+  cardPitcher("J.T. Ginn",'SP',410,{SO:5,GB:7,FB:3,LD:2,BB:2,'2B':5,HR:1},6,3),
+  cardPitcher("Gage Jump",'SP',220,{SO:6,GB:5,FB:4,LD:2,BB:1,'1B':1,'2B':7,HR:1},5,2),
+  cardPitcher("Jacob Lopez",'SP',230,{SO:5,GB:4,FB:2,LD:6,BB:2,'2B':4,HR:1},5,2),
+  cardPitcher("Jeffrey Springs",'SP',70,{SO:4,GB:5,FB:5,LD:2,BB:1,'1B':2,'2B':1,HR:1},5,2),
+  cardPitcher("Luis Severino",'SP',250,{SO:6,GB:6,FB:3,LD:1,BB:2,'1B':1,'2B':3,HR:1},5,3),
+  cardPitcher("Elvis Alvarado",'RP',160,{SO:8,GB:4,FB:5,BB:2,'2B':1,HR:1},1,3),
+  cardPitcher("Mason Barnett",'RP',180,{SO:4,GB:4,FB:4,LD:2,BB:3,'1B':2,HR:1},2,6),
+  cardPitcher("Brady Basso",'RP',150,{SO:4,GB:5,FB:6,LD:1,'1B':2,'2B':6,HR:1},1,4),
+  cardPitcher("Scott Blewett",'RP',210,{SO:3,GB:6,FB:5,LD:1,BB:1,'1B':4,'2B':6,HR:1},1,6),
+  cardPitcher("Seth Johnson",'RP',130,{SO:5,GB:4,FB:3,LD:1,BB:3,'1B':3,'2B':3,HR:1},1,6),
+  cardPitcher("Hogan Harris",'RP',110,{SO:8,GB:5,FB:1,LD:3,BB:3,'1B':2,'2B':4,HR:1},1,1),
+  cardPitcher("Mark Leiter Jr.",'RP',140,{SO:7,GB:5,FB:4,LD:1,BB:1,'1B':2,'2B':6,HR:1},1,2),
+  cardPitcher("Hayden Juenger",'RP',100,{SO:1,GB:4,FB:5,LD:3,BB:2,'1B':4,'2B':7,HR:1},1,6),
+  cardPitcher("Jack Perkins",'RP',60,{SO:6,GB:4,FB:4,LD:2,BB:1,'1B':2,'2B':2,HR:1},2,2),
+  cardPitcher("Luis Medina",'RP',140,{SO:7,GB:4,FB:4,LD:1,BB:2,'1B':1,'2B':6,HR:1},1,3),
+  cardPitcher("Jose Suarez",'RP',60,{SO:6,GB:6,FB:2,LD:3,BB:1,'1B':1,'2B':7,HR:1},1,1),
+  cardPitcher("Justin Sterner",'RP',160,{SO:5,GB:5,FB:4,LD:2,BB:1,'1B':1,'2B':1,HR:1},1,5),
+  cardPitcher("Chris Roycroft",'RP',10,{SO:3,GB:7,FB:4,BB:2,'1B':3,HR:1},1,3),
+];
+const SEA_BATTERS = [
+  cardBatter("Brendan Donovan",['3B'],250,9,{SO:1,GB:3,FB:3,BB:5,'1B':6,'2B':1,HR:1},12,{'3B':1}),
+  cardBatter("J.P. Crawford",['3B','SS'],80,10,{SO:2,GB:2,FB:2,BB:7,'1B':5,'2B':1,HR:1},10,{'3B':2,SS:0}),
+  cardBatter("Cal Raleigh",['C'],10,9,{SO:3,GB:2,FB:4,BB:7,'1B':1,'2B':1,HR:1},10,{C:6}),
+  cardBatter("Leo Rivas",['3B','SS'],10,13,{SO:2,GB:2,FB:3,BB:9,'1B':4,'3B':2,HR:1},8,{'3B':1,SS:3}),
+  cardBatter("Josh Naylor",['1B'],170,18,{SO:1,GB:3,FB:2,BB:3,'1B':9,'2B':1,HR:1},10,{'1B':0}),
+  cardBatter("Colt Emerson",['SS','3B'],10,12,{SO:3,GB:2,FB:1,BB:2,'1B':7,'2B':1,HR:1},7,{SS:2,'3B':1}),
+  cardBatter("Randy Arozarena",['LF','RF'],330,15,{SO:2,GB:3,FB:3,BB:5,'1B':4,'2B':2,HR:1},13,{LF:1,RF:1}),
+  cardBatter("Cole Young",['2B'],130,13,{SO:1,GB:2,FB:3,BB:3,'1B':8,'2B':1,HR:1},9,{'2B':2}),
+  cardBatter("Weston Wilson",['3B','LF','RF'],20,16,{SO:2,GB:2,FB:1,BB:6,'1B':5,'2B':2,HR:1},8,{'3B':0,LF:1,RF:1}),
+  cardBatter("Luke Raley",['LF','CF','RF'],150,14,{SO:2,GB:1,FB:2,BB:3,'1B':6,'2B':2,HR:1},8,{LF:0,CF:0,RF:0}),
+  cardBatter("Victor Robles",['LF','CF','RF'],100,21,{SO:2,GB:3,FB:3,BB:2,'1B':10,'3B':2,HR:1},11,{LF:1,CF:1,RF:1}),
+  cardBatter("Julio Rodriguez",['CF','LF','RF'],200,18,{SO:1,GB:2,FB:2,BB:3,'1B':9,'2B':1,HR:1},9,{CF:1,LF:0,RF:0}),
+  cardBatter("Dominic Canzone",['LF','RF'],330,11,{SO:2,GB:2,FB:2,BB:4,'1B':5,'2B':2,HR:1},10,{LF:1,RF:1}),
+  cardBatter("Taylor Ward",['LF','RF'],90,12,{SO:2,GB:2,FB:3,BB:7,'1B':5,'2B':1,HR:1},12,{LF:1,RF:1}),
+];
+const SEA_PITCHERS = [
+  cardPitcher("Eduard Bazardo",'RP',150,{SO:6,GB:5,FB:3,LD:3,'1B':2,'2B':3,HR:1},1,3),
+  cardPitcher("Matt Brash",'RP',280,{SO:5,GB:5,FB:6,LD:1,BB:3,'1B':2,'2B':4,HR:1},1,5),
+  cardPitcher("Cooper Criswell",'RP',180,{SO:4,GB:8,FB:4,LD:1,'1B':4,'2B':4,HR:1},1,3),
+  cardPitcher("Nick Davila",'RP',210,{SO:2,GB:9,FB:4,LD:2,BB:2,'1B':2,'2B':5,HR:1},1,3),
+  cardPitcher("Seranthony Dominguez",'RP',160,{SO:7,GB:5,FB:1,LD:3,BB:3,'1B':1,HR:1},1,3),
+  cardPitcher("Jose A. Ferrer",'RP',150,{SO:4,GB:9,FB:3,LD:1,'1B':3,'2B':6,HR:1},1,2),
+  cardPitcher("Logan Gilbert",'SP',400,{SO:7,GB:6,FB:3,LD:3,'2B':4,HR:1},6,2),
+  cardPitcher("Emerson Hancock",'SP',310,{SO:6,GB:7,FB:3,LD:3,'2B':5,HR:1},6,1),
+  cardPitcher("George Kirby",'SP',220,{SO:5,GB:7,FB:3,LD:3,'1B':1,'2B':7,HR:1},6,1),
+  cardPitcher("Michael Rucker",'RP',140,{SO:7,GB:7,FB:2,LD:2,BB:1,'1B':2,'2B':5,HR:1},1,1),
+  cardPitcher("Andres Munoz",'RP',160,{SO:11,GB:5,FB:1,LD:2,BB:1,'1B':2,'2B':2,HR:1},1,1),
+  cardPitcher("Bryce Miller",'SP',390,{SO:6,GB:5,FB:4,LD:3,'1B':1,'2B':1,HR:1},6,3),
+  cardPitcher("Bryan Woo",'SP',470,{SO:5,GB:4,FB:4,LD:3,BB:1,'1B':2,'2B':2,HR:1},6,6),
+  cardPitcher("Cole Wilcox",'RP',170,{SO:5,GB:5,FB:3,LD:1,BB:3,'1B':7,'2B':2,HR:1},1,5),
+  cardPitcher("Gabe Speier",'RP',170,{SO:5,GB:7,FB:4,LD:3,BB:4,'1B':2,'2B':1,HR:1},1,1),
+];
 
 const TEAM_POOL = {
   rays: buildRosterFromPool("Tampa Bay","Rays",{battery:3, infield:3, outfield:3}, TB_BATTERS, TB_PITCHERS, "#092C5C", "TB"),
@@ -2423,9 +2522,9 @@ const TEAM_POOL = {
   royals: buildRosterFromPool("Kansas City","Royals",{battery:3, infield:3, outfield:3}, KC_BATTERS, KC_PITCHERS, "#004687", "KC"),
   astros: buildRosterFromPool("Houston","Astros",{battery:3, infield:3, outfield:3}, HOU_BATTERS, HOU_PITCHERS, "#EB6E1F", "HOU"),
   rangers: buildRosterFromPool("Texas","Rangers",{battery:3, infield:3, outfield:3}, TEX_BATTERS, TEX_PITCHERS, "#C0111F", "TEX"),
-  angels: buildRosterFromPool("Los Angeles","Angels",{battery:3, infield:3, outfield:3}, LAA_POOL.batters, LAA_POOL.pitchers, "#BA0021", "LAA"),
-  athletics: buildRosterFromPool("Sacramento","Athletics",{battery:3, infield:3, outfield:3}, ATH_POOL.batters, ATH_POOL.pitchers, "#003831", "ATH"),
-  mariners: buildRosterFromPool("Seattle","Mariners",{battery:3, infield:3, outfield:3}, SEA_POOL.batters, SEA_POOL.pitchers, "#0C2C56", "SEA"),
+  angels: buildRosterFromPool("Los Angeles","Angels",{battery:3, infield:3, outfield:3}, LAA_BATTERS, LAA_PITCHERS, "#BA0021", "LAA"),
+  athletics: buildRosterFromPool("Sacramento","Athletics",{battery:3, infield:3, outfield:3}, ATH_BATTERS, ATH_PITCHERS, "#003831", "ATH"),
+  mariners: buildRosterFromPool("Seattle","Mariners",{battery:3, infield:3, outfield:3}, SEA_BATTERS, SEA_PITCHERS, "#0C2C56", "SEA"),
   dodgers: buildRosterFromPool("Los Angeles","Dodgers",{battery:3, infield:3, outfield:3}, DOD_BATTERS, DOD_PITCHERS, "#005A9C", "LAD"),
   padres: buildRosterFromPool("San Diego","Padres",{battery:3, infield:3, outfield:3}, PAD_BATTERS, PAD_PITCHERS, "#2F241D", "SD"),
   diamondbacks: buildRosterFromPool("Arizona","Diamondbacks",{battery:3, infield:3, outfield:3}, ARI_BATTERS, ARI_PITCHERS, "#A71930", "ARI"),
@@ -2493,6 +2592,11 @@ const HAND_OVERRIDES = {
   'Sean Manaea':'L', 'Cionel Perez':'L', 'Zac Thornton':'L',
   'Jared Young':'L', 'Carson Benge':'L', 'A.J. Ewing':'L', 'Jorge Polanco':'S', 'Juan Soto':'L',
   'Jimmy Crooks':'L', 'Nolan Gorman':'L', 'Alec Burleson':'L', 'JJ Wetherholt':'L', 'Justin Bruihl':'L', 'Matthew Liberatore':'L',
+  'Brady Basso':'L', 'Hogan Harris':'L', 'Gage Jump':'L', 'Jacob Lopez':'L', 'Jeffrey Springs':'L', 'Jose Suarez':'L', 'Jonah Heim':'S',
+  'Nick Kurtz':'L', 'Jeff McNeil':'L', 'Donovan Walton':'L', 'Lawrence Butler':'L', 'Tyler Soderstrom':'L', 'Carlos Cortes':'L', 'Jose A. Ferrer':'L',
+  'Gabe Speier':'L', 'Brendan Donovan':'L', 'J.P. Crawford':'L', 'Cal Raleigh':'S', 'Leo Rivas':'S', 'Josh Naylor':'L', 'Colt Emerson':'L', 'Cole Young':'L', 'Luke Raley':'L',
+  'Dominic Canzone':'L', 'Reid Detmers':'L', 'Mitch Farris':'L', 'Yusei Kikuchi':'L', 'Samy Natera Jr.':'L', 'Tyler Heineman':'S', 'Adam Frazier':'L', 'Yoan Moncada':'S',
+  'Nolan Schanuel':'L', 'Josh Lowe':'L', 'Wade Meckler':'L', 'Moises Ballesteros':'L',
   'Nathan Church':'L', 'Victor Scott II':'L', 'Bryan Torres':'L',
   'Matthew Boyd':'L', 'Shota Imanaga':'L', 'Hoby Milner':'L', 'David Peterson':'L',
   'Ryan Rolison':'L', 'Caleb Thielbar':'L', 'Michael Busch':'L', 'Pete Crow-Armstrong':'L', 'Michael Conforto':'L',
@@ -7715,14 +7819,30 @@ function resolveExtraBaseDecisions(){
 // The single-sent-runner case: no "which one" choice needed, but the throw itself is still the
 // defense's action, triggered on the defense's own device.
 function renderExtraBaseDefenseThrow(m){
-  const fk = fieldingTeamKey(GS);
+  const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
   const {contested} = GS.pendingExtraBaseThrow;
   const dz = el('div','decision');
   dz.innerHTML = `<div class="lbl">${contested.runnerName} Sent to ${contested.toBase==='home'?'Home':'3rd'} \u2014 Defense Throws</div>`;
   m.appendChild(dz);
   const doThrow = ()=>{ const c=GS.pendingExtraBaseThrow; GS.pendingExtraBaseThrow=null; resolveContestedExtraBase(c.contested, c.autoSafeOther); };
+  // Shows the real matchup — same bonus math and Outfield Defense number resolveContestedExtraBase
+  // itself uses — before committing to the throw, matching the same popup pattern already used for
+  // the offense's own send decision.
+  const showPopupAndThrow = ()=>{
+    const bonus = (contested.toBase==='home' ? 3 : 0) + (GS.outs===2 ? 3 : 0);
+    const defValue = TEAMS[fk].defense.outfield + fielderBonus(fk,'CF');
+    const offValue = runnerSpeed(tk, contested.runnerName) + bonus;
+    ROLL_CONFIRM_POPUP = {
+      title: `Throw ${contested.toBase==='home'?'Home':'to 3rd'}: ${contested.runnerName}`,
+      offenseLabel: 'Runner Speed'+(bonus?` (+${bonus})`:''), offenseValue: offValue,
+      defenseLabel: 'Outfield Defense', defenseValue: defValue,
+      confirmLabel: 'Attempt Throw',
+      onConfirm: doThrow,
+    };
+    render();
+  };
   if(isHumanControls(fk)){
-    const btn = el('button','btn blueline','Attempt Throw'); btn.onclick=doThrow;
+    const btn = el('button','btn blueline','Attempt Throw'); btn.onclick=showPopupAndThrow;
     dz.appendChild(btn);
   } else {
     autoAdvanceOrWait(dz, fk, doThrow, 'Waiting for the defense to attempt the throw\u2026');
@@ -7730,19 +7850,35 @@ function renderExtraBaseDefenseThrow(m){
 }
 
 function renderExtraBaseDefensePick(m){
-  const fk = fieldingTeamKey(GS);
+  const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
   const eb = GS.extraBase;
   const sentList = eb.candidates.filter((c,i)=>eb.sent[i]);
   const dz = el('div','decision');
   dz.innerHTML = `<div class="lbl">Two Runners Sent — Which Do You Throw At?</div>`;
   m.appendChild(dz);
   const pickAndResolve = (cand)=>{ const other = sentList.find(c=>c!==cand); resolveContestedExtraBase(cand, other); };
+  // Tapping either option shows that specific matchup's real numbers first, rather than committing
+  // immediately — Cancel returns to this same choice screen, so the defense can check the OTHER
+  // runner's numbers too before finally deciding who to actually throw at.
+  const showPopupForCandidate = (cand)=>{
+    const bonus = (cand.toBase==='home' ? 3 : 0) + (GS.outs===2 ? 3 : 0);
+    const defValue = TEAMS[fk].defense.outfield + fielderBonus(fk,'CF');
+    const offValue = runnerSpeed(tk, cand.runnerName) + bonus;
+    ROLL_CONFIRM_POPUP = {
+      title: `Throw ${cand.toBase==='home'?'Home':'to 3rd'}: ${cand.runnerName}`,
+      offenseLabel: 'Runner Speed'+(bonus?` (+${bonus})`:''), offenseValue: offValue,
+      defenseLabel: 'Outfield Defense', defenseValue: defValue,
+      confirmLabel: 'Throw Here',
+      onConfirm: ()=>pickAndResolve(cand),
+    };
+    render();
+  };
   if(isHumanControls(fk)){
     const row = el('div','btnrow');
     sentList.forEach(cand=>{
       const label = cand.toBase==='home' ? `Throw Home (vs ${cand.runnerName})` : `Throw to 3rd (vs ${cand.runnerName})`;
       const btn = el('button','btn small blueline', label);
-      btn.onclick = ()=>pickAndResolve(cand);
+      btn.onclick = ()=>showPopupForCandidate(cand);
       row.appendChild(btn);
     });
     dz.appendChild(row);
