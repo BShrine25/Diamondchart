@@ -4344,6 +4344,7 @@ function simStep(){
       return true;
     }
     case 'extrabase-result': GS.contestResult=null; afterPlateAppearance(); return true;
+    case 'dp-choice': initiateDP(); return true; // defensive fallback if a sim is started while paused here
     case 'dp-preroll': initiateDP(); return true; // defensive fallback if a sim is started while paused here — swing-rolled already resolves this directly during a sim burst
     case 'dp-result': GS.contestResult=null; afterPlateAppearance(); return true;
     case 'steal-result': GS.contestResult=null; afterPlateAppearance(); return true;
@@ -8282,6 +8283,7 @@ function renderDecisionFlow(m){
     case 'extrabase-result': renderContestResult(m); return;
     case 'dp-rolling': renderRollingDie(m, 'Infield Defense Roll'); return;
     case 'dp-result': renderContestResult(m); return;
+    case 'dp-choice': renderDPChoice(m); return;
     case 'dp-preroll': renderDPPreroll(m); return;
     case 'gb-unforced-choice': renderGbUnforcedChoice(m); return;
     case 'steal-defense-throw': renderStealDefenseThrow(m); return;
@@ -8825,7 +8827,11 @@ function initiateAbsChallenge(challengingSide){
     } else if(roll<=19){
       bannerText = 'Overturned \u2014 Reroll The At-Bat';
       bannerClass = 'hit';
-      nextAction = ()=>{ doThrowPitch(); };
+      // Full manual restart — same starting point as any other at-bat (defense-choice), so both the
+      // pitch roll and the swing roll each need their own explicit click, exactly like a fresh at-bat
+      // for a human OR a CPU (the CPU's own auto-advance timers pick it up from here same as always).
+      // This is deliberately NOT doThrowPitch() directly, which would silently auto-roll the pitch.
+      nextAction = ()=>{ GS.stage='defense-choice'; render(); };
     } else {
       const flippedOutcome = res.outcome==='BB' ? 'SO' : 'BB';
       bannerText = `Overturned \u2014 Call Flipped To A ${OUTCOME_LABEL[flippedOutcome]}!`;
@@ -8922,8 +8928,8 @@ function renderSwingRolled(m){
   }
   const tk=battingTeamKey(GS), fk=fieldingTeamKey(GS);
   const nextFn = ()=>{
-    if(GS.pendingClass==='dp'){ GS.stage='dp-preroll'; render(); }
-    else if(GS.pendingClass==='dp-or-force3'){ GS.stage='dp-preroll'; render(); }
+    if(GS.pendingClass==='dp'){ GS.stage='dp-choice'; render(); }
+    else if(GS.pendingClass==='dp-or-force3'){ GS.stage='dp-choice'; render(); }
     else if(GS.pendingClass==='gb-unforced-2nd'){ GS.stage='gb-unforced-choice'; render(); }
     else if(GS.pendingClass==='infieldin-gb-loaded'){ initiateInfieldInGBLoaded(); }
     else if(GS.pendingClass==='infieldin-gb-choice'){ GS.stage='infieldin-gb-choice'; render(); }
@@ -8932,12 +8938,13 @@ function renderSwingRolled(m){
     else { afterPlateAppearance(); }
   };
   // "Continue" belongs to whoever's decision naturally comes next. For a fully-automatic defensive
-  // resolution — a DP roll, or the Infield-In bases-loaded force at home — there's no further choice
-  // screen at all; this click IS effectively "make the defensive play," so it belongs to the fielding
-  // side, not the team that just batted. Everywhere else (a plain result with nothing left to decide,
-  // or about to reach the batting/fielding side's OWN separate choice screen next) keeps the existing
-  // batting-side gating, since that's just acknowledging their own result.
-  const continueOwner = (GS.pendingClass==='dp' || GS.pendingClass==='infieldin-gb-loaded') ? fk : tk;
+  // resolution — just the Infield-In bases-loaded force at home, with no further choice screen at all
+  // — this click IS effectively "make the defensive play," so it belongs to the fielding side, not the
+  // team that just batted. Everywhere else (a plain result with nothing left to decide, or about to
+  // reach the batting/fielding side's OWN separate choice screen next — including both double-play
+  // variants now that a plain DP also gets its own dp-choice screen with its own gating) keeps the
+  // existing batting-side gating, since that's just acknowledging their own result.
+  const continueOwner = (GS.pendingClass==='infieldin-gb-loaded') ? fk : tk;
   if(isHumanControls(continueOwner)){
     const btn=el('button','btn','Continue'); btn.onclick=nextFn; rz.appendChild(btn);
   } else {
@@ -9044,10 +9051,30 @@ function initiateSteal(base){
 }
 
 /* ---------------- DOUBLE PLAYS (3.13) ---------------- */
-// Shown before the roll actually happens, for BOTH: (a) a plain runner-on-1st double play, and
-// (b) the "runners on 1st and 2nd" house rule choice below — either way the defense sees the real
-// Infield Defense vs Batter Speed matchup up front, on the very first screen, before committing to
-// anything — same principle as every other "send runner"-style prompt elsewhere in the game.
+// First screen, before any numbers are shown at all — same principle as tapping "Send Runner"
+// elsewhere before ever seeing a matchup: the defense has to actually commit to attempting the double
+// play before the real Infield Defense vs Batter Speed numbers appear on the next screen. Covers both
+// (a) a plain runner-on-1st double play, and (b) the "runners on 1st and 2nd" house rule, where the
+// alternative is a guaranteed, uncontested out at 3rd instead — offered as "Cancel" one screen later,
+// not here, so clicking through to attempt the double play always looks and behaves the same way.
+function renderDPChoice(m){
+  const fk = fieldingTeamKey(GS);
+  const isForce3Branch = GS.pendingClass==='dp-or-force3';
+  const dz = el('div','decision');
+  dz.innerHTML = `<div class="lbl">${isForce3Branch ? 'Runners on 1st & 2nd \u2014 Ground Ball' : 'Runner on 1st \u2014 Ground Ball'}</div>`;
+  m.appendChild(dz);
+  if(isHumanControls(fk)){
+    const row = el('div','btnrow');
+    const dpBtn = el('button','btn small blueline','Attempt Double Play'); dpBtn.onclick=()=>{ GS.stage='dp-preroll'; render(); };
+    row.appendChild(dpBtn);
+    dz.appendChild(row);
+  } else {
+    autoAdvanceOrWait(dz, fk, ()=>{ if(GS && GS.stage==='dp-choice'){ initiateDP(); } }, 'Waiting for the defense to decide how to play it\u2026');
+  }
+}
+// Shown only after committing to "Attempt Double Play" above — the real matchup, with a genuine
+// choice of Roll (turn it) or Cancel (settle for the guaranteed, no-risk out instead: a force at 2nd
+// only for a plain double play, or the automatic out at 3rd for the 1st-and-2nd house rule).
 function renderDPPreroll(m){
   const res = GS.lastResolved;
   const fk = fieldingTeamKey(GS);
@@ -9055,14 +9082,14 @@ function renderDPPreroll(m){
   const offValue = res.batter.speed+3;
   const isForce3Branch = GS.pendingClass==='dp-or-force3';
   const dz = el('div','decision');
-  dz.innerHTML = `<div class="lbl">${isForce3Branch ? 'Runners on 1st & 2nd \u2014 Turn Two or Force at 3rd?' : 'Turn Two?'} Infield Defense <b>${defValue}</b> vs Batter Speed (+3) <b>${offValue}</b></div>`;
+  dz.innerHTML = `<div class="lbl">Turn Two? Infield Defense <b>${defValue}</b> vs Batter Speed (+3) <b>${offValue}</b></div>`;
   m.appendChild(dz);
   if(isHumanControls(fk)){
     const row = el('div','btnrow');
-    const turnBtn = el('button','btn small blueline','Turn Two'); turnBtn.onclick=initiateDP;
-    const backBtn = el('button','btn small secondary', isForce3Branch ? 'Take the Out at 3rd' : 'Take the Force Out');
-    backBtn.onclick = isForce3Branch ? initiateForceAt3rd : resolveForceOutOnly;
-    row.appendChild(turnBtn); row.appendChild(backBtn);
+    const rollBtn = el('button','btn small blueline','Roll'); rollBtn.onclick=initiateDP;
+    const cancelBtn = el('button','btn small secondary', isForce3Branch ? 'Cancel \u2014 Take the Out at 3rd' : 'Cancel \u2014 Take the Force Out');
+    cancelBtn.onclick = isForce3Branch ? initiateForceAt3rd : resolveForceOutOnly;
+    row.appendChild(rollBtn); row.appendChild(cancelBtn);
     dz.appendChild(row);
   } else {
     autoAdvanceOrWait(dz, fk, ()=>{ if(GS && GS.stage==='dp-preroll'){ initiateDP(); } }, 'Waiting for the defense to decide how to play it\u2026');
