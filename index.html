@@ -3332,6 +3332,13 @@ function newGameState(mode){
     infieldIn:false,
     pitchBonus:0,
     buntAttempt:0,
+    // House rule: ABS Challenge. Each side starts with 2; a LOST challenge costs one, a WON challenge
+    // costs nothing (see initiateAbsChallenge). absExtraInningsGranted tracks the highest inning both
+    // sides have already been given their +1-per-extra-inning bonus through, so checkHalfInningOver
+    // only grants it once per inning number, not once per half.
+    absChallenges:{away:2, home:2},
+    absExtraInningsGranted:9,
+    absPending:null, absChallengeResult:null,
     subSlotIdx:null,
     subBaseIdx:null,
     log:[],
@@ -3853,7 +3860,16 @@ function checkHalfInningOver(gs){
     if(!gs.teamLOB) gs.teamLOB = {away:0, home:0};
     gs.teamLOB[battingTeamKey(gs)] += strandedCount;
     gs.outs=0; gs.infieldIn=false; gs.onBaseBonus=0;
-    if(gs.half==='top'){ gs.half='bottom'; } else { gs.inning+=1; gs.half='top'; }
+    if(gs.half==='top'){ gs.half='bottom'; } else {
+      gs.inning+=1; gs.half='top';
+      // House rule: ABS Challenge — both sides get +1 challenge for every inning of extra innings,
+      // granted once per new inning number reached (not once per half).
+      if(gs.inning > gs.absExtraInningsGranted){
+        gs.absChallenges.away += 1;
+        gs.absChallenges.home += 1;
+        gs.absExtraInningsGranted = gs.inning;
+      }
+    }
     gs.bases = extraInningGhostRunner(gs);
     return true;
   }
@@ -8291,6 +8307,9 @@ function renderDecisionFlow(m){
     case 'sub-pinchhit-bench': renderPinchHitBenchPick(m); return;
     case 'sub-pinchrun-base': renderPinchRunBasePick(m); return;
     case 'sub-pinchrun-bench': renderPinchRunBenchPick(m); return;
+    case 'abs-challenge-offer': renderAbsChallengeOffer(m); return;
+    case 'abs-challenge-rolling': renderRollingDie(m, 'ABS Challenge Roll'); return;
+    case 'abs-challenge-result': renderAbsChallengeResult(m); return;
   }
 }
 
@@ -8700,6 +8719,29 @@ function doRollSwing(){
   startDieRoll(sides, 'swing-rolling', (roll)=>{
     const res = computeSwingOutcome(GS, GS.pending, roll);
     GS.pending = null;
+    maybeOfferAbsChallenge(res, roll);
+  });
+}
+// House rule: ABS Challenge — only ever offered on a walk or a strikeout, and only to a side that's
+// both human-controlled (the CPU never proposes one, same as every other optional/strategic decision
+// in this engine) and still has a challenge to spend. If nobody's eligible, the plate appearance just
+// finishes immediately exactly as it always has.
+function maybeOfferAbsChallenge(res, roll){
+  if(res.outcome==='BB' || res.outcome==='SO'){
+    const awayCan = GS.absChallenges.away>0 && isHumanControls('away');
+    const homeCan = GS.absChallenges.home>0 && isHumanControls('home');
+    if(awayCan || homeCan){
+      GS.absPending = { res, roll, awayCan, homeCan };
+      GS.stage = 'abs-challenge-offer';
+      render();
+      return;
+    }
+  }
+  finishSwingResolution(res, roll);
+}
+// The rest of what doRollSwing used to do in one shot, now reusable so an ABS challenge can call it
+// again with a modified (flipped) or entirely fresh (rerolled) result.
+function finishSwingResolution(res, roll){
     // Box score "Team RISP": credit this at-bat toward the team's RISP tally if a runner was in
     // scoring position (2nd or 3rd) BEFORE this swing, using res.outcome directly since it's already
     // fully determined here regardless of which follow-up path (DP/tagup/etc.) the play then takes.
@@ -8763,7 +8805,70 @@ function doRollSwing(){
     }
     GS.stage='swing-rolled';
     render();
+}
+// House rule: ABS Challenge — the challenging side rolls once. 12 or below: challenge lost (costs
+// them a challenge), call stands as originally rolled. 13–19: overturned, the whole at-bat is redone
+// from a fresh pitch roll (doThrowPitch). Exactly 20: overturned AND flipped straight to the opposite
+// call (a walk becomes a strikeout, a strikeout becomes a walk) — no reroll, no extra dice. A won
+// challenge (13+) never costs a challenge at all.
+function initiateAbsChallenge(challengingSide){
+  startDieRoll(20, 'abs-challenge-rolling', (roll)=>{
+    const { res, roll: swingRoll } = GS.absPending;
+    let bannerText, bannerClass, nextAction;
+    if(roll<=12){
+      GS.absChallenges[challengingSide] -= 1;
+      bannerText = 'Challenge Lost \u2014 Call Stands';
+      bannerClass = 'out';
+      nextAction = ()=>{ finishSwingResolution(res, swingRoll); };
+    } else if(roll<=19){
+      bannerText = 'Overturned \u2014 Reroll The At-Bat';
+      bannerClass = 'hit';
+      nextAction = ()=>{ doThrowPitch(); };
+    } else {
+      const flippedOutcome = res.outcome==='BB' ? 'SO' : 'BB';
+      bannerText = `Overturned \u2014 Call Flipped To A ${OUTCOME_LABEL[flippedOutcome]}!`;
+      bannerClass = 'hit';
+      const flipped = Object.assign({}, res, { outcome: flippedOutcome });
+      nextAction = ()=>{ finishSwingResolution(flipped, swingRoll); };
+    }
+    GS.absChallengeResult = { challengingSide, roll, bannerText, bannerClass, nextAction };
+    GS.absPending = null;
+    GS.stage = 'abs-challenge-result';
+    render();
   });
+}
+function renderAbsChallengeOffer(m){
+  const { res, awayCan, homeCan } = GS.absPending;
+  const dz = el('div','decision');
+  dz.innerHTML = `<div class="lbl">${OUTCOME_LABEL[res.outcome]} \u2014 ABS Challenge?</div>`;
+  m.appendChild(dz);
+  const row = el('div','btnrow');
+  if(awayCan){
+    const b = el('button','btn small blueline', `${TEAMS.away.nick} Challenge (${GS.absChallenges.away} left)`);
+    b.onclick = ()=>initiateAbsChallenge('away');
+    row.appendChild(b);
+  }
+  if(homeCan){
+    const b = el('button','btn small blueline', `${TEAMS.home.nick} Challenge (${GS.absChallenges.home} left)`);
+    b.onclick = ()=>initiateAbsChallenge('home');
+    row.appendChild(b);
+  }
+  const contBtn = el('button','btn small secondary','No Challenge');
+  contBtn.onclick = ()=>{ const {res:r,roll} = GS.absPending; GS.absPending=null; finishSwingResolution(r, roll); };
+  row.appendChild(contBtn);
+  dz.appendChild(row);
+}
+function renderAbsChallengeResult(m){
+  const r = GS.absChallengeResult;
+  const rz = el('div','rollzone');
+  rz.appendChild(el('div','playlabel', `${TEAMS[r.challengingSide].nick} ABS Challenge`));
+  const dp = el('div','diepair'); dp.appendChild(dieBox('Challenge Roll', r.roll, false, false)); rz.appendChild(dp);
+  rz.appendChild(el('div','advline', '12 or below: call stands \u00b7 13\u201319: reroll the at-bat \u00b7 20: call flips'));
+  rz.appendChild(el('div','outcome-banner '+r.bannerClass, r.bannerText));
+  const btn = el('button','btn','Continue');
+  btn.onclick = ()=>{ const action = r.nextAction; GS.absChallengeResult=null; action(); };
+  rz.appendChild(btn);
+  m.appendChild(rz);
 }
 
 function renderSwingRolling(m){
