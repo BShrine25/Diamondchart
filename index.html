@@ -4344,7 +4344,7 @@ function simStep(){
       return true;
     }
     case 'extrabase-result': GS.contestResult=null; afterPlateAppearance(); return true;
-    case 'dp-or-force3-choice': initiateDP(); return true; // defensive fallback [SIMPLIFIED] — swing-rolled already resolves this directly during a sim
+    case 'dp-preroll': initiateDP(); return true; // defensive fallback if a sim is started while paused here — swing-rolled already resolves this directly during a sim burst
     case 'dp-result': GS.contestResult=null; afterPlateAppearance(); return true;
     case 'steal-result': GS.contestResult=null; afterPlateAppearance(); return true;
     case 'bunt-attempt1-missed': GS.contestResult=null; runBuntAttempt(); return true;
@@ -8282,7 +8282,6 @@ function renderDecisionFlow(m){
     case 'extrabase-result': renderContestResult(m); return;
     case 'dp-rolling': renderRollingDie(m, 'Infield Defense Roll'); return;
     case 'dp-result': renderContestResult(m); return;
-    case 'dp-or-force3-choice': renderDPOrForce3Choice(m); return;
     case 'dp-preroll': renderDPPreroll(m); return;
     case 'gb-unforced-choice': renderGbUnforcedChoice(m); return;
     case 'steal-defense-throw': renderStealDefenseThrow(m); return;
@@ -8728,8 +8727,11 @@ function doRollSwing(){
 // finishes immediately exactly as it always has.
 function maybeOfferAbsChallenge(res, roll){
   if(res.outcome==='BB' || res.outcome==='SO'){
-    const awayCan = GS.absChallenges.away>0 && isHumanControls('away');
-    const homeCan = GS.absChallenges.home>0 && isHumanControls('home');
+    // A walk only ever hurts the pitching side, and a strikeout only ever hurts the batting side —
+    // the other side has nothing to gain from a challenge, so it's never even offered to them.
+    const aggrievedSide = res.outcome==='BB' ? fieldingTeamKey(GS) : battingTeamKey(GS);
+    const awayCan = aggrievedSide==='away' && GS.absChallenges.away>0 && isHumanControls('away');
+    const homeCan = aggrievedSide==='home' && GS.absChallenges.home>0 && isHumanControls('home');
     if(awayCan || homeCan){
       GS.absPending = { res, roll, awayCan, homeCan };
       GS.stage = 'abs-challenge-offer';
@@ -8839,9 +8841,18 @@ function initiateAbsChallenge(challengingSide){
 }
 function renderAbsChallengeOffer(m){
   const { res, awayCan, homeCan } = GS.absPending;
-  const dz = el('div','decision');
-  dz.innerHTML = `<div class="lbl">${OUTCOME_LABEL[res.outcome]} \u2014 ABS Challenge?</div>`;
-  m.appendChild(dz);
+  const rz = el('div','rollzone');
+  const dp = el('div','diepair');
+  dp.appendChild(dieBox('Pitch Roll', res.pitchRoll, false, false));
+  dp.appendChild(dieBox(res.swingUsesPowerDie?'Power Die':'Swing Roll', res.swingRoll, res.swingUsesPowerDie, false));
+  rz.appendChild(dp);
+  rz.appendChild(el('div','advline', `Pitch <b>${res.pitchTotal}</b> vs On-Base <b>${res.effOnBase}</b> \u2192 <b>${res.advantage==='pitcher'?'Pitcher':'Batter'}</b> advantage`));
+  if(res.mistake){ rz.appendChild(el('div','mistaketag','MISTAKE PITCH')); }
+  rz.appendChild(el('div','outcome-banner '+(res.outcome==='BB'?'bb':'out'), OUTCOME_LABEL[res.outcome]||res.outcome));
+  m.appendChild(rz);
+
+  const dz = el('div','decision'); dz.style.marginTop='10px';
+  dz.innerHTML = `<div class="lbl">ABS Challenge?</div>`;
   const row = el('div','btnrow');
   if(awayCan){
     const b = el('button','btn small blueline', `${TEAMS.away.nick} Challenge (${GS.absChallenges.away} left)`);
@@ -8857,6 +8868,7 @@ function renderAbsChallengeOffer(m){
   contBtn.onclick = ()=>{ const {res:r,roll} = GS.absPending; GS.absPending=null; finishSwingResolution(r, roll); };
   row.appendChild(contBtn);
   dz.appendChild(row);
+  m.appendChild(dz);
 }
 function renderAbsChallengeResult(m){
   const r = GS.absChallengeResult;
@@ -8911,7 +8923,7 @@ function renderSwingRolled(m){
   const tk=battingTeamKey(GS), fk=fieldingTeamKey(GS);
   const nextFn = ()=>{
     if(GS.pendingClass==='dp'){ GS.stage='dp-preroll'; render(); }
-    else if(GS.pendingClass==='dp-or-force3'){ GS.stage='dp-or-force3-choice'; render(); }
+    else if(GS.pendingClass==='dp-or-force3'){ GS.stage='dp-preroll'; render(); }
     else if(GS.pendingClass==='gb-unforced-2nd'){ GS.stage='gb-unforced-choice'; render(); }
     else if(GS.pendingClass==='infieldin-gb-loaded'){ initiateInfieldInGBLoaded(); }
     else if(GS.pendingClass==='infieldin-gb-choice'){ GS.stage='infieldin-gb-choice'; render(); }
@@ -9033,11 +9045,9 @@ function initiateSteal(base){
 
 /* ---------------- DOUBLE PLAYS (3.13) ---------------- */
 // Shown before the roll actually happens, for BOTH: (a) a plain runner-on-1st double play, and
-// (b) the "Go for Double Play" branch of the 1st-and-2nd house rule choice above — the defense sees
-// the real Infield Defense vs Batter Speed matchup and has to explicitly commit to the roll rather
-// than it happening the instant the previous screen's Continue button is clicked. Backing out takes
-// the safe, guaranteed option instead: a force at 2nd only (plain DP case) or the force at 3rd
-// (the other house-rule branch, via its own already-separate resolver).
+// (b) the "runners on 1st and 2nd" house rule choice below — either way the defense sees the real
+// Infield Defense vs Batter Speed matchup up front, on the very first screen, before committing to
+// anything — same principle as every other "send runner"-style prompt elsewhere in the game.
 function renderDPPreroll(m){
   const res = GS.lastResolved;
   const fk = fieldingTeamKey(GS);
@@ -9045,13 +9055,13 @@ function renderDPPreroll(m){
   const offValue = res.batter.speed+3;
   const isForce3Branch = GS.pendingClass==='dp-or-force3';
   const dz = el('div','decision');
-  dz.innerHTML = `<div class="lbl">Turn Two? Infield Defense <b>${defValue}</b> vs Batter Speed (+3) <b>${offValue}</b></div>`;
+  dz.innerHTML = `<div class="lbl">${isForce3Branch ? 'Runners on 1st & 2nd \u2014 Turn Two or Force at 3rd?' : 'Turn Two?'} Infield Defense <b>${defValue}</b> vs Batter Speed (+3) <b>${offValue}</b></div>`;
   m.appendChild(dz);
   if(isHumanControls(fk)){
     const row = el('div','btnrow');
     const turnBtn = el('button','btn small blueline','Turn Two'); turnBtn.onclick=initiateDP;
-    const backBtn = el('button','btn small secondary', isForce3Branch ? 'Cancel' : 'Take the Force Out');
-    backBtn.onclick = isForce3Branch ? (()=>{ GS.stage='dp-or-force3-choice'; render(); }) : resolveForceOutOnly;
+    const backBtn = el('button','btn small secondary', isForce3Branch ? 'Take the Out at 3rd' : 'Take the Force Out');
+    backBtn.onclick = isForce3Branch ? initiateForceAt3rd : resolveForceOutOnly;
     row.appendChild(turnBtn); row.appendChild(backBtn);
     dz.appendChild(row);
   } else {
@@ -9153,22 +9163,9 @@ function initiateDP(){
    the standard double play (3.13 — force at 2nd automatic, contested throw at the batter) or an
    uncontested, guaranteed out at 3rd on the runner who'd otherwise be forced there — a fielder's
    choice (glossary FC: "the Defense chooses to throw out a different baserunner instead of the
-   Batter... not a hit for the Batter"), with the batter and the runner from 1st automatically safe. */
-function renderDPOrForce3Choice(m){
-  const fk = fieldingTeamKey(GS);
-  const dz = el('div','decision');
-  dz.innerHTML = `<div class="lbl">Runners on 1st & 2nd — Double Play or Force at 3rd?</div>`;
-  m.appendChild(dz);
-  if(isHumanControls(fk)){
-    const row = el('div','btnrow');
-    const dpBtn = el('button','btn small blueline','Go for Double Play'); dpBtn.onclick=()=>{ GS.stage='dp-preroll'; render(); };
-    const f3Btn = el('button','btn small secondary','Take the Out at 3rd'); f3Btn.onclick=initiateForceAt3rd;
-    row.appendChild(dpBtn); row.appendChild(f3Btn);
-    dz.appendChild(row);
-  } else {
-    autoAdvanceOrWait(dz, fk, ()=>{ if(GS && GS.stage==='dp-or-force3-choice'){ initiateDP(); } }, 'Waiting for the defense to decide how to play it\u2026');
-  }
-}
+   Batter... not a hit for the Batter"), with the batter and the runner from 1st automatically safe.
+   (See renderDPPreroll below — both branches of this choice live on that one screen now, so the
+   matchup numbers are visible before either decision instead of one extra tap later.) */
 
 function initiateForceAt3rd(){
   const res = GS.lastResolved;
