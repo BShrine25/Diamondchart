@@ -1455,6 +1455,124 @@ function assignToRoster(roster, player){
   if(!assigned && !roster.backupC && player.elig && player.elig.includes('C')){ roster.backupC=player; assigned=true; }
   if(!assigned){ roster.bench.push(player); }
 }
+// ---------------- FREE AGENCY (Draft Season only, local + online) ----------------
+// Anyone the draft pool didn't assign to a team becomes a free agent the moment the draft finishes
+// (see handleDraftCompletion) — this pool lives at SEASON.freeAgents and is browsable/sortable by
+// position exactly like the draft's own player pool (see renderFreeAgentsView / DRAFT_FILTERS).
+function isDraftSeasonScope(){
+  return !!(SEASON && (SEASON.statsScope==='draft-local' || SEASON.statsScope==='draft-online'));
+}
+function teamTotalPoints(team){
+  return [...team.lineup, ...team.bench, ...team.rotation, ...team.bullpen]
+    .reduce((sum,p)=> sum + (p && p.points || 0), 0);
+}
+// No mid-future-cost projection here (unlike the draft's canAssign) — free agency isn't filling a
+// fixed set of remaining categories turn by turn, it's just "does signing this one player, right
+// now, push this team over the hard cap." Uncapped leagues always return true.
+function canSignFreeAgent(teamIdx, player){
+  if(!SEASON.capEnabled) return true;
+  return teamTotalPoints(SEASON.teams[teamIdx]) + (player.points||0) <= DRAFT_CAP;
+}
+// Adds a free agent onto a finalized team's roster — same slot-priority a draft pick would use
+// (open position slot > DH > bench for batters; rotation/bullpen for pitchers), just applied to the
+// flat post-draft team shape instead of the in-progress draftRoster shape. Two-way players never
+// reach here as a single pool entry (finalizeDraftedTeam already split them into independent
+// pitcher/batter cards before free agency ever sees the pool), so this only ever handles one job.
+function signFreeAgentToTeam(teamIdx, player){
+  const team = SEASON.teams[teamIdx];
+  const isPitcher = player.role==='SP' || player.role==='RP';
+  const added = Object.assign({}, player);
+  delete added.drafted; delete added.origin; delete added.ptype;
+  if(isPitcher){
+    if(added.role==='SP') team.rotation.push(added); else team.bullpen.push(added);
+  } else {
+    let assigned = false;
+    const openSlot = team.lineup.find(p=>p.name==='(unfilled)' && p.pos!=='DH' && added.elig && added.elig.includes(p.pos));
+    if(openSlot){ Object.assign(openSlot, added, {pos:openSlot.pos}); assigned=true; }
+    if(!assigned){
+      const dhSlot = team.lineup.find(p=>p.pos==='DH' && p.name==='(unfilled)');
+      if(dhSlot){ Object.assign(dhSlot, added, {pos:'DH'}); assigned=true; }
+    }
+    if(!assigned) team.bench.push(added);
+  }
+  team.pitchers = [team.rotation[0], ...team.bullpen].filter(Boolean);
+  if(SEASON.freeAgents){
+    const idx = SEASON.freeAgents.indexOf(player);
+    if(idx>=0) SEASON.freeAgents.splice(idx,1);
+  }
+  // Inherit whichever streak this team's most recently dropped BATTER left on the books, so the
+  // mandatory-start clock keeps ticking across the roster move instead of quietly resetting to 0 —
+  // pitchers are deliberately excluded (SEASON.pitcherRest/pitcherStreak stay keyed to the departed
+  // pitcher's own name and are simply never looked at again once he's off the roster).
+  if(!isPitcher && SEASON.pendingBenchInherit && SEASON.pendingBenchInherit[teamIdx]!=null){
+    if(!SEASON.benchRest) SEASON.benchRest = {};
+    SEASON.benchRest[teamIdx+':'+added.name] = SEASON.pendingBenchInherit[teamIdx];
+    delete SEASON.pendingBenchInherit[teamIdx];
+  }
+  return added;
+}
+// Drops a rostered player back into the free agent pool. His accumulated season stat LINE is left
+// completely untouched (still keyed off his own name in SEASON.seasonBatStats/seasonPitchStats) —
+// it'll simply show up under the Free Agents tab of Stats/Leaders until (if ever) someone re-signs
+// him, at which point it follows him to his new team automatically (see mergedStatsByPlayer).
+function dropPlayerFromTeam(teamIdx, player){
+  const team = SEASON.teams[teamIdx];
+  let removed = false;
+  const lineupIdx = team.lineup.findIndex(p=>p.name===player.name);
+  if(lineupIdx>=0){
+    const pos = team.lineup[lineupIdx].pos;
+    team.lineup[lineupIdx] = Object.assign({}, {name:'(unfilled)',points:0,speed:10,onBase:10,chart:BASELINE_BATTER_CHART}, {pos});
+    removed = true;
+  }
+  const benchIdx = team.bench.findIndex(p=>p.name===player.name);
+  if(benchIdx>=0){ team.bench.splice(benchIdx,1); removed = true; }
+  const rotIdx = team.rotation.findIndex(p=>p.name===player.name);
+  if(rotIdx>=0){ team.rotation.splice(rotIdx,1); removed = true; }
+  const bullIdx = team.bullpen.findIndex(p=>p.name===player.name);
+  if(bullIdx>=0){ team.bullpen.splice(bullIdx,1); removed = true; }
+  if(!removed) return false;
+  team.pitchers = [team.rotation[0], ...team.bullpen].filter(Boolean);
+  const isPitcher = player.role==='SP' || player.role==='RP';
+  if(!isPitcher){
+    if(!SEASON.pendingBenchInherit) SEASON.pendingBenchInherit = {};
+    const key = teamIdx+':'+player.name;
+    SEASON.pendingBenchInherit[teamIdx] = (SEASON.benchRest && SEASON.benchRest[key]) || 0;
+    if(SEASON.benchRest) delete SEASON.benchRest[key];
+  }
+  if(!SEASON.freeAgents) SEASON.freeAgents = [];
+  SEASON.freeAgents.push(Object.assign({}, player, {drafted:false}));
+  return true;
+}
+// Who (if anyone) currently rosters a given player name — the authoritative "current team" used to
+// decide where his merged season stat line displays (see mergedStatsByPlayer). Returns -1 for a
+// free agent (dropped, or never drafted at all but somehow has a stat line — shouldn't happen, but
+// -1 is the correct bucket for it either way).
+function playerCurrentTeamIdx(name){
+  if(!SEASON || !SEASON.teams) return -1;
+  for(let i=0;i<SEASON.teams.length;i++){
+    const t = SEASON.teams[i];
+    if(t.lineup.some(p=>p.name===name) || t.bench.some(p=>p.name===name) ||
+       t.rotation.some(p=>p.name===name) || t.bullpen.some(p=>p.name===name)) return i;
+  }
+  return -1;
+}
+// Collapses a stat source (keyed 'teamIdx:name', one bucket per roster STINT) down to one summed
+// line per player NAME — this is what makes a traded/re-signed player's full season line follow him
+// as a whole rather than staying split across every team he passed through. Returns {name: line}.
+function mergedStatsByPlayer(source){
+  const merged = {};
+  Object.keys(source||{}).forEach(key=>{
+    const sep = key.indexOf(':');
+    const name = key.slice(sep+1);
+    const line = source[key];
+    if(!merged[name]) merged[name] = Object.assign({}, line);
+    else {
+      const acc = merged[name];
+      Object.keys(line).forEach(stat=>{ acc[stat] = (acc[stat]||0) + (line[stat]||0); });
+    }
+  });
+  return merged;
+}
 // Snake order, generalized to any team count: round 0 goes 0,1,2,...,N-1; round 1 reverses;
 // round 2 forward again; etc. N=2 collapses to the original away,home/home,away pattern.
 function draftDrafterAt(pickIndex, teamCount){
@@ -1499,12 +1617,14 @@ function handleDraftCompletion(){
     // above, finishing here is just: build the teams (identical to the local season branch below),
     // flip the room's phase, and let the normal render()-hook push carry it to every seat.
     SEASON.teams = DRAFT.rosters.map((r,i)=>finalizeDraftedTeam(r, DRAFT.names[i], SEASON.colors ? SEASON.colors[i] : undefined));
+    SEASON.freeAgents = DRAFT.pool.filter(p=>!p.drafted);
     ONLINE_SEASON.phase = 'season';
     SCREEN='seasonhub';
     return false;
   }
   if(DRAFT.season){
     SEASON.teams = DRAFT.rosters.map((r,i)=>finalizeDraftedTeam(r, DRAFT.names[i], SEASON.colors ? SEASON.colors[i] : undefined));
+    SEASON.freeAgents = DRAFT.pool.filter(p=>!p.drafted);
     SCREEN='seasonhub';
   } else {
     TEAMS.away = finalizeDraftedTeam(DRAFT.rosters[0], DRAFT.names[0], '#0B3D91');
@@ -3678,6 +3798,15 @@ let SIM_ACTIVE=false;
 let HUMAN_SIDE='away';
 let MENU_CATEGORY=null;
 let SEASON_AWAY_HUMAN=true, SEASON_HOME_HUMAN=true;
+// Free agency (Draft Season only, local + online): SEASON.freeAgents holds every undrafted pool
+// player once the draft finishes; FA_VIEW/FA_FILTER/FA_TEAM_IDX drive the browsing screen the same
+// way DRAFT_FILTER/DRAFT_ROSTER_VIEW drive the draft's own pool screen.
+let FA_VIEW=false, FA_FILTER='ALL', FA_TEAM_IDX=0;
+let PLAYOFF_SCHEDULE_VIEW=false;
+// Set while viewing a PAST game's box score from the schedule (as opposed to the live in-progress
+// game) — see renderBoxScore, which temporarily swaps the GS/TEAMS globals for the snapshot's own
+// saved copies so every existing box-score table function works unmodified against old games too.
+let BOX_SCORE_SNAPSHOT=null;
 let TOURNEY_PENDING_MATCH=null;
 function el(tag,cls,html){ const e=document.createElement(tag); if(cls) e.className=cls; if(html!==undefined) e.innerHTML=html; return e; }
 // Picks whichever of white or dark-chalk text has better WCAG contrast against a given hex
@@ -3798,10 +3927,13 @@ function renderReal(){
   if(SCREEN==='seasonhub' && SEASON_SCHEDULE_VIEW){ renderSeasonScheduleView(); }
   if(SCREEN==='seasonhub' && SEASON_STATS_VIEW){ renderSeasonStatsView(); }
   if(SCREEN==='seasonhub' && SEASON_LEADERS_VIEW){ renderSeasonLeadersView(); }
+  if(SCREEN==='seasonhub' && FA_VIEW){ renderFreeAgentsView(); }
+  if(SCREEN==='playoffs' && PLAYOFF_SCHEDULE_VIEW){ renderPlayoffScheduleView(); }
   if(SCREEN==='roster' && LINEUP_EDIT){ renderLineupEditPicker(); }
   else if(SCREEN==='game') renderGame();
   if(SCREEN==='game' && MAT_VIEW){ renderMatView(); }
   if(SCREEN==='game' && BOX_VIEW){ renderBoxScore(); }
+  if(SCREEN!=='game' && BOX_SCORE_SNAPSHOT && BOX_VIEW){ renderBoxScore(); }
   if(SEASON_END_STAGE){ renderSeasonEndPrompt(); }
   if(ROLL_CONFIRM_POPUP){ renderRollConfirmPopup(); }
   if(CONFIRM_STATE){ renderConfirmOverlay(); }
@@ -4770,27 +4902,105 @@ function renderSeasonRosterView(){
   body.appendChild(navRow);
 
   body.appendChild(el('div','team-label', `${SEASON.names[i]}${isCpu?' \u00b7 CPU':''}`));
+  const canManage = isDraftSeasonScope();
+  const addDropBtn = (row, p)=>{
+    if(!canManage || p.name==='(unfilled)') return;
+    const dropBtn = el('button','btn small secondary','Drop'); dropBtn.style.marginLeft='auto';
+    dropBtn.onclick = (e)=>{ e.stopPropagation(); showConfirm(`Drop ${p.name} from ${SEASON.names[i]}? He\\u2019ll return to the free agent pool.`, ()=>{ dropPlayerFromTeam(i, p); render(); }); };
+    row.appendChild(dropBtn);
+  };
   const list = el('div','plist');
   team.lineup.forEach(p=>{
     const row = el('div','prow');
     row.innerHTML = p.name==='(unfilled)'
       ? `<div class="pos">${p.pos}</div><div class="nm" style="color:var(--muted);">\u2014 open \u2014</div>`
       : `<div class="pos">${p.pos}</div><div class="nm">${p.name}${p.twoWay?' <span class="twoway-tag">Two-Way</span>':''}</div><div class="sub2">${p.points} pt</div>`;
+    addDropBtn(row, p);
     list.appendChild(row);
   });
   team.bench.forEach(p=>{
     const row = el('div','prow');
     row.innerHTML = `<div class="pos">BN</div><div class="nm">${p.name}</div><div class="sub2">${p.points} pt</div>`;
+    addDropBtn(row, p);
     list.appendChild(row);
   });
   team.rotation.forEach(p=>{
     const row = el('div','prow');
     row.innerHTML = `<div class="pos">SP</div><div class="nm">${p.name}${p.twoWay?' <span class="twoway-tag">Two-Way</span>':''}</div><div class="sub2">${p.points} pt</div>`;
+    addDropBtn(row, p);
     list.appendChild(row);
   });
   team.bullpen.forEach(p=>{
     const row = el('div','prow');
     row.innerHTML = `<div class="pos">RP</div><div class="nm">${p.name}${p.twoWay?' <span class="twoway-tag">Two-Way</span>':''}</div><div class="sub2">${p.points} pt</div>`;
+    addDropBtn(row, p);
+    list.appendChild(row);
+  });
+  body.appendChild(list);
+  if(canManage){
+    const faBtn = el('button','btn small secondary','Sign Free Agent'); faBtn.style.marginTop='10px';
+    faBtn.onclick = ()=>{ FA_VIEW=true; SEASON_ROSTER_VIEW=false; FA_TEAM_IDX=i; render(); };
+    body.appendChild(faBtn);
+  }
+  ov.appendChild(body);
+  root.appendChild(ov);
+}
+
+// Free agent pool browser — same position-tab filtering as the draft's own pool screen (a player
+// shows up under every position he's eligible for, not just one), plus a team-picker so you can
+// browse the whole pool before committing to who you're signing for.
+function renderFreeAgentsView(){
+  const ov = el('div','matoverlay');
+  const top = el('div','mattop');
+  top.innerHTML = `<div class="matwordmark">Free Agents<span>${(SEASON.freeAgents||[]).length} available</span></div>`;
+  const closeBtn = el('button','backbtn','Close');
+  closeBtn.onclick = ()=>{ FA_VIEW=false; render(); };
+  top.appendChild(closeBtn);
+  ov.appendChild(top);
+
+  if(FA_TEAM_IDX >= SEASON.teams.length) FA_TEAM_IDX = 0;
+  ov.appendChild(el('div','team-label','Signing For'));
+  const teamChips = el('div','draftfilters');
+  SEASON.teams.forEach((team,i)=>{
+    const b = el('button','draftfilterbtn'+(FA_TEAM_IDX===i?' active':''), SEASON.names[i]);
+    b.onclick = ()=>{ FA_TEAM_IDX=i; render(); };
+    teamChips.appendChild(b);
+  });
+  ov.appendChild(teamChips);
+
+  const posChips = el('div','draftfilters');
+  DRAFT_FILTERS.forEach(f=>{
+    const b = el('button','draftfilterbtn'+(FA_FILTER===f?' active':''), f);
+    b.onclick = ()=>{ FA_FILTER=f; render(); };
+    posChips.appendChild(b);
+  });
+  ov.appendChild(posChips);
+
+  const body = el('div','matbody');
+  const teamPts = teamTotalPoints(SEASON.teams[FA_TEAM_IDX]);
+  if(SEASON.capEnabled){
+    body.appendChild(el('div','rulesnote', `${SEASON.names[FA_TEAM_IDX]}: ${teamPts} / ${DRAFT_CAP} pts used \\u2014 signings that would push them over the cap are grayed out below.`));
+  }
+
+  let players = (SEASON.freeAgents||[]).slice();
+  if(FA_FILTER==='SP'||FA_FILTER==='RP'){ players = players.filter(p=>p.role===FA_FILTER); }
+  else if(FA_FILTER!=='ALL'){ players = players.filter(p=>p.role!=='SP' && p.role!=='RP' && p.elig && p.elig.includes(FA_FILTER)); }
+  players.sort((a,b)=>b.points-a.points);
+
+  const list = el('div','draftlist');
+  if(players.length===0) list.appendChild(el('div','rulesnote','No free agents in this filter right now.'));
+  players.forEach(p=>{
+    const isPitcher = p.role==='SP'||p.role==='RP';
+    const posLabel = isPitcher ? p.role : ((p.elig&&p.elig[0])||p.pos||'?');
+    const metaExtra = isPitcher ? (' \\u00b7 CMD '+p.command) : (' \\u00b7 OB '+p.onBase);
+    const legal = canSignFreeAgent(FA_TEAM_IDX, p);
+    const row = el('div','draftrow'+(legal?'':' disabled'));
+    row.innerHTML = `<div class="dpos">${posLabel}</div>
+      <div class="dinfo"><div class="dname">${p.name}</div><div class="dmeta">${p.origin && TEAM_POOL[p.origin] ? TEAM_POOL[p.origin].nick+' \\u00b7 ' : ''}${isPitcher?p.role:(p.elig||[]).join('/')}${metaExtra}</div></div>
+      <div class="dpts">${p.points}</div>`;
+    if(legal){
+      row.onclick = ()=>{ showConfirm(`Sign ${p.name} to ${SEASON.names[FA_TEAM_IDX]}?`, ()=>{ signFreeAgentToTeam(FA_TEAM_IDX, p); render(); }); };
+    }
     list.appendChild(row);
   });
   body.appendChild(list);
@@ -5468,6 +5678,7 @@ function recordSeasonResult(idx, awayScore, homeScore){
   recordBenchMandatoryPlay(GS, g.awayIdx, g.homeIdx);
   accumulateGameStats(GS, g.awayIdx, g.homeIdx, false);
   g.played=true; g.awayScore=awayScore; g.homeScore=homeScore;
+  g.boxScore = buildBoxScoreSnapshot();
 }
 
 function renderSeasonSetup(){
@@ -5800,6 +6011,11 @@ function renderSeasonHub(){
   const leadersBtn = el('button','btn secondary','League Leaders');
   leadersBtn.onclick = ()=>{ SEASON_LEADERS_VIEW=true; render(); };
   btnRow.appendChild(rosterBtn); btnRow.appendChild(scheduleBtn); btnRow.appendChild(statsBtn); btnRow.appendChild(leadersBtn);
+  if(isDraftSeasonScope()){
+    const faBtn = el('button','btn secondary','Free Agents');
+    faBtn.onclick = ()=>{ FA_VIEW=true; FA_TEAM_IDX=SEASON_ROSTER_TEAM_IDX||0; render(); };
+    btnRow.appendChild(faBtn);
+  }
   btnRow.style.marginBottom='14px';
   wrap.appendChild(btnRow);
 
@@ -5900,7 +6116,8 @@ function renderSeasonHub(){
       const humanInvolved = !SEASON.humanControlled || SEASON.humanControlled[g.awayIdx] || SEASON.humanControlled[g.homeIdx];
       const row = el('div','prow'+(humanInvolved?' standrow':''));
       if(g.played){
-        row.innerHTML = `<div class="nm">${SEASON.teams[g.awayIdx].nick} ${g.awayScore} @ ${SEASON.teams[g.homeIdx].nick} ${g.homeScore}</div><div class="sub2">Final</div>`;
+        row.innerHTML = `<div class="nm">${SEASON.teams[g.awayIdx].nick} ${g.awayScore} @ ${SEASON.teams[g.homeIdx].nick} ${g.homeScore}</div><div class="sub2">Final${g.boxScore?' \u2014 tap for box score':''}</div>`;
+        if(g.boxScore){ row.style.cursor='pointer'; row.onclick = ()=>openHistoricalBoxScore(g.boxScore); }
       } else if(ONLINE_SEASON && humanInvolved){
         // Online, this matchup is between two specific seats (not necessarily including me) — same
         // create/join/restart flow Bobby asked for, matching the 1v1 online draft/game pattern: one
@@ -5995,8 +6212,9 @@ function renderSeasonScheduleView(){
       const row = el('div','prow');
       const awayName = SEASON.teams[g.awayIdx].nick, homeName = SEASON.teams[g.homeIdx].nick;
       row.innerHTML = g.played
-        ? `<div class="nm">${awayName} ${g.awayScore} @ ${homeName} ${g.homeScore}</div><div class="sub2">Final</div>`
+        ? `<div class="nm">${awayName} ${g.awayScore} @ ${homeName} ${g.homeScore}</div><div class="sub2">Final${g.boxScore?' \u2014 tap for box score':''}</div>`
         : `<div class="nm">${awayName} @ ${homeName}</div><div class="sub2" style="color:var(--muted);">Not yet played</div>`;
+      if(g.played && g.boxScore){ row.style.cursor='pointer'; row.onclick = ()=>openHistoricalBoxScore(g.boxScore); }
       list.appendChild(row);
     });
     body.appendChild(list);
@@ -6037,18 +6255,27 @@ function renderSeasonStatsView(){
     b.onclick = ()=>{ SEASON_STATS_TEAM_IDX=i; render(); };
     chips.appendChild(b);
   });
+  const faTab = el('button','draftfilterbtn'+(SEASON_STATS_TEAM_IDX===-1?' active':''), 'Free Agents');
+  faTab.onclick = ()=>{ SEASON_STATS_TEAM_IDX=-1; render(); };
+  chips.appendChild(faTab);
   ov.appendChild(chips);
 
   const body = el('div','matbody');
   const teamIdx = SEASON_STATS_TEAM_IDX;
-  const t = SEASON.teams[teamIdx];
-  const prefix = teamIdx+':';
+  const isFA = teamIdx===-1;
+  const teamLabel = isFA ? 'Free Agents' : SEASON.teams[teamIdx].nick;
   const sectionLabel = usePlayoff ? 'Playoffs' : 'Regular Season';
 
-  body.appendChild(el('div','team-label', `${t.nick} — ${sectionLabel} Batting`));
-  const batEntries = Object.keys(batSource||{})
-    .filter(key=>key.startsWith(prefix))
-    .map(key=>({ name:key.slice(prefix.length), s:batSource[key] }))
+  // A player's full-season line follows him — merged across every team he's stinted with this
+  // season — and displays under whichever team currently rosters him (or Free Agents if no one
+  // currently does), never split or left stranded under a team that no longer has him.
+  const mergedBat = mergedStatsByPlayer(batSource);
+  const mergedPitch = mergedStatsByPlayer(pitchSource);
+
+  body.appendChild(el('div','team-label', `${teamLabel} — ${sectionLabel} Batting`));
+  const batEntries = Object.keys(mergedBat)
+    .filter(name => playerCurrentTeamIdx(name) === teamIdx)
+    .map(name=>({ name, s:mergedBat[name] }))
     .sort((a,b)=> b.s.AB - a.s.AB);
   const batTable = document.createElement('table');
   batTable.className='boxtable';
@@ -6056,13 +6283,13 @@ function renderSeasonStatsView(){
     <tbody>${batEntries.length ? batEntries.map(e=>{
       const avg=fmtAvg(battingAvg(e.s)), ops=fmtAvg(battingOPS(e.s));
       return `<tr><td class="team">${e.name}</td><td>${e.s.AB}</td><td>${e.s.R}</td><td>${e.s.H}</td><td>${e.s['2B']}</td><td>${e.s['3B']}</td><td>${e.s.HR}</td><td>${e.s.RBI}</td><td>${e.s.BB}</td><td>${e.s.SO}</td><td>${e.s.SB}</td><td>${avg}</td><td>${ops}</td></tr>`;
-    }).join('') : `<tr><td class="team" colspan="12" style="text-align:center;color:var(--muted);">No games played yet.</td></tr>`}</tbody>`;
+    }).join('') : `<tr><td class="team" colspan="12" style="text-align:center;color:var(--muted);">${isFA?'No free agents have played this season.':'No games played yet.'}</td></tr>`}</tbody>`;
   body.appendChild(batTable);
 
-  body.appendChild(el('div','team-label', `${t.nick} — ${sectionLabel} Pitching`));
-  const pitchEntries = Object.keys(pitchSource||{})
-    .filter(key=>key.startsWith(prefix))
-    .map(key=>({ name:key.slice(prefix.length), s:pitchSource[key] }))
+  body.appendChild(el('div','team-label', `${teamLabel} — ${sectionLabel} Pitching`));
+  const pitchEntries = Object.keys(mergedPitch)
+    .filter(name => playerCurrentTeamIdx(name) === teamIdx)
+    .map(name=>({ name, s:mergedPitch[name] }))
     .sort((a,b)=> b.s.outs - a.s.outs);
   const pitchTable = document.createElement('table');
   pitchTable.className='boxtable';
@@ -6070,7 +6297,7 @@ function renderSeasonStatsView(){
     <tbody>${pitchEntries.length ? pitchEntries.map(e=>{
       const era=fmtERA(pitchingERA(e.s));
       return `<tr><td class="team">${e.name}</td><td>${e.s.W||0}</td><td>${e.s.L||0}</td><td>${e.s.SV||0}</td><td>${formatIP(e.s.outs)}</td><td>${e.s.H}</td><td>${e.s.R}</td><td>${e.s.ER}</td><td>${e.s.BB}</td><td>${e.s.SO}</td><td>${e.s.HR}</td><td>${era}</td></tr>`;
-    }).join('') : `<tr><td class="team" colspan="11" style="text-align:center;color:var(--muted);">No games played yet.</td></tr>`}</tbody>`;
+    }).join('') : `<tr><td class="team" colspan="11" style="text-align:center;color:var(--muted);">${isFA?'No free agents have pitched this season.':'No games played yet.'}</td></tr>`}</tbody>`;
   body.appendChild(pitchTable);
 
   ov.appendChild(body);
@@ -6080,20 +6307,22 @@ function renderSeasonStatsView(){
 // Ranks every player across the WHOLE league (not just one team) in a given season stat, for the
 // league leaders screen. minQualifier keeps small-sample flukes (e.g. a 1-for-1 hitter at 1.000, or
 // a reliever's single scoreless outing) off the leaderboard.
+// Ranks every player league-wide by their MERGED (whole-season, across any team changes) line, so a
+// player who was traded or picked up off waivers is ranked on his full body of work, not just
+// whatever fraction of it happened to accumulate under one team key — free agents are fully
+// eligible too (teamIdx -1) as long as they clear the same qualifying bar as anyone else.
 function computeLeaders(statKey, source, count, ascending, minQualifier){
+  const merged = mergedStatsByPlayer(source);
   const entries = [];
-  Object.keys(source||{}).forEach(key=>{
-    const sep = key.indexOf(':');
-    const teamIdx = Number(key.slice(0,sep));
-    const name = key.slice(sep+1);
-    const s = source[key];
+  Object.keys(merged).forEach(name=>{
+    const s = merged[name];
     if(minQualifier && !minQualifier(s)) return;
     let value;
     if(statKey==='AVG') value = battingAvg(s);
     else if(statKey==='OPS') value = battingOPS(s);
     else if(statKey==='ERA') value = pitchingERA(s);
     else value = s[statKey]||0;
-    entries.push({ teamIdx, name, value });
+    entries.push({ teamIdx: playerCurrentTeamIdx(name), name, value });
   });
   entries.sort((a,b)=> ascending ? a.value-b.value : b.value-a.value);
   return entries.slice(0, count);
@@ -6311,7 +6540,7 @@ function recordPlayoffResult(roundIdx, matchIdx, homeIdx, awayIdx, homeScore, aw
   // mandatory-play call here: "no roster restrictions for playoffs."
   recordPitcherRestDebt(GS, awayIdx, homeIdx);
   accumulateGameStats(GS, awayIdx, homeIdx, true);
-  m.games.push({homeIdx, awayIdx, homeScore, awayScore});
+  m.games.push({homeIdx, awayIdx, homeScore, awayScore, boxScore: buildBoxScoreSnapshot()});
   if(homeIdx===m.aTeamIdx || awayIdx===m.aTeamIdx){
     const aIsHome = homeIdx===m.aTeamIdx;
     if((aIsHome && homeScore>awayScore) || (!aIsHome && awayScore>homeScore)) m.aWins++; else m.bWins++;
@@ -6368,8 +6597,10 @@ function playoffSeedOf(bracket, teamIdx){
 function renderPlayoffs(){
   const top = el('div','topbar');
   top.innerHTML = `<div class="display">Playoffs</div>`;
+  const scheduleBtn = el('button','backbtn','Schedule'); scheduleBtn.style.marginRight='6px';
+  scheduleBtn.onclick = ()=>{ PLAYOFF_SCHEDULE_VIEW=true; render(); };
   const back = el('button','backbtn','Season Hub'); back.onclick=()=>{ SCREEN='seasonhub'; render(); };
-  top.appendChild(back); root.appendChild(top);
+  top.appendChild(scheduleBtn); top.appendChild(back); root.appendChild(top);
 
   const wrap = el('div','roster-wrap');
   const bracket = SEASON.playoffs;
@@ -6460,6 +6691,55 @@ function renderPlayoffs(){
   });
 
   root.appendChild(wrap);
+}
+
+// Flat, game-by-game view of the whole playoff bracket — unlike the series-level rows on the main
+// Playoffs screen (which only show an aggregate W-L for the series), this lists every INDIVIDUAL
+// game played so far (tap one for its box score, same as the regular-season schedule) plus a note
+// for whichever game is up next in each still-undecided series.
+function renderPlayoffScheduleView(){
+  const ov = el('div','matoverlay');
+  const top = el('div','mattop');
+  top.innerHTML = `<div class="matwordmark">Playoff Schedule</div>`;
+  const closeBtn = el('button','backbtn','Close');
+  closeBtn.onclick = ()=>{ PLAYOFF_SCHEDULE_VIEW=false; render(); };
+  top.appendChild(closeBtn);
+  ov.appendChild(top);
+
+  const body = el('div','matbody');
+  const bracket = SEASON.playoffs;
+  bracket.rounds.forEach((round, r)=>{
+    const roundLabel = round.name || playoffRoundName(bracket.rounds.length, r);
+    body.appendChild(el('div','team-label', `${roundLabel} \u2014 Best of ${round.bestOf}`));
+    const list = el('div','plist');
+    round.matches.forEach(m=>{
+      if(m.aTeamIdx===undefined || m.bTeamIdx===undefined || m.bye) return; // nothing to list yet
+      const aName = SEASON.teams[m.aTeamIdx].nick, bName = SEASON.teams[m.bTeamIdx].nick;
+      const seedA = playoffSeedOf(bracket, m.aTeamIdx), seedB = playoffSeedOf(bracket, m.bTeamIdx);
+      if(m.games.length===0){
+        const row = el('div','prow');
+        row.innerHTML = `<div class="nm" style="color:var(--muted);">(${seedA}) ${aName} vs (${seedB}) ${bName} \u2014 not yet started</div>`;
+        list.appendChild(row);
+        return;
+      }
+      m.games.forEach((g, gi)=>{
+        const row = el('div','prow');
+        const awayName = SEASON.teams[g.awayIdx].nick, homeName = SEASON.teams[g.homeIdx].nick;
+        row.innerHTML = `<div class="nm">Game ${gi+1}: ${awayName} ${g.awayScore} @ ${homeName} ${g.homeScore}</div><div class="sub2">Final${g.boxScore?' \u2014 tap for box score':''}</div>`;
+        if(g.boxScore){ row.style.cursor='pointer'; row.onclick = ()=>openHistoricalBoxScore(g.boxScore); }
+        list.appendChild(row);
+      });
+      if(m.winnerTeamIdx==null){
+        const row = el('div','prow');
+        row.innerHTML = `<div class="nm" style="color:var(--muted);">(${seedA}) ${aName} ${m.aWins} \u2013 ${m.bWins} (${seedB}) ${bName} \u2014 Game ${m.games.length+1} of up to ${round.bestOf} not yet played</div>`;
+        list.appendChild(row);
+      }
+    });
+    if(list.children.length) body.appendChild(list);
+  });
+
+  ov.appendChild(body);
+  root.appendChild(ov);
 }
 
 /* ---------------- TOURNAMENT MODE (4-16 teams, no draft, single/double elimination) ---------------- */
@@ -8878,6 +9158,10 @@ function combinedBatLine(teamKey, name){
   const bucket = (typeof PLAYOFF_MATCH_REF!=='undefined' && PLAYOFF_MATCH_REF) ? SEASON.playoffBatStats : SEASON.seasonBatStats;
   if(!bucket) return today;
   const career = bucket[seasonIdx+':'+name] || initBatLine();
+  // Viewing a PAST game from the schedule: the season bucket was already permanently merged with
+  // this exact game's stats back when it was first played/saved, so "career" alone already IS the
+  // as-of-this-game season total — adding today's line again would double-count this one game.
+  if(BOX_SCORE_SNAPSHOT) return career;
   const combined = {};
   Object.keys(today).forEach(k=>{ combined[k] = (career[k]||0) + (today[k]||0); });
   return combined;
@@ -8889,9 +9173,40 @@ function combinedPitchLine(teamKey, name){
   const bucket = (typeof PLAYOFF_MATCH_REF!=='undefined' && PLAYOFF_MATCH_REF) ? SEASON.playoffPitchStats : SEASON.seasonPitchStats;
   if(!bucket) return today;
   const career = bucket[seasonIdx+':'+name] || {outs:0,H:0,R:0,ER:0,BB:0,SO:0,HR:0,BF:0};
+  if(BOX_SCORE_SNAPSHOT) return career; // already includes this exact game — see combinedBatLine above
   const combined = {};
   ['outs','H','R','ER','BB','SO','HR','BF'].forEach(k=>{ combined[k] = (career[k]||0) + (today[k]||0); });
   return combined;
+}
+// ---------------- HISTORICAL BOX SCORES (schedule -> tap a played game -> full box score) ----------------
+// A minimal, JSON-safe stand-in for a TEAMS[key] entry — battingTableHTML/pitchingTableHTML only
+// ever read city/nick/seasonIdx plus each pitcher's name off this, everything else (lineup, bench,
+// full card data) comes from the GS snapshot's own lineupHistory/batStats/pitStats instead.
+function minimalTeamSnapshot(t){
+  return { city:t.city, nick:t.nick, abbr:t.abbr, seasonIdx: (t.seasonIdx==null?null:t.seasonIdx),
+    pitchers: t.pitchers.map(p=>({name:p.name, role:p.role})) };
+}
+// Deep, JSON-safe clone of a finished game's state for permanent storage on its schedule entry.
+// pitcherRemoved is the only Set living on GS (see the identical fix used for online push/receive) —
+// converted to plain arrays here since nothing in the box-score render path ever calls .has() on it.
+function snapshotGSForBox(gs){
+  return JSON.parse(JSON.stringify(Object.assign({}, gs, {
+    pitcherRemoved: { away: Array.from(gs.pitcherRemoved.away), home: Array.from(gs.pitcherRemoved.home) },
+  })));
+}
+// Builds the full persisted snapshot for one just-finished game — called right before GS/TEAMS get
+// reused for whatever's next, so this is the last moment both are guaranteed to still reflect this
+// specific game.
+function buildBoxScoreSnapshot(){
+  return { gs: snapshotGSForBox(GS), teams: { away: minimalTeamSnapshot(TEAMS.away), home: minimalTeamSnapshot(TEAMS.home) } };
+}
+// Opens a past game's box score from anywhere in the schedule/playoffs UI. No-ops quietly if this
+// particular game predates the box-score-snapshot feature (an older save/export won't have one).
+function openHistoricalBoxScore(snapshot){
+  if(!snapshot) return;
+  BOX_SCORE_SNAPSHOT = snapshot;
+  BOX_VIEW = true;
+  render();
 }
 function battingAvg(s){ return s.AB>0 ? s.H/s.AB : 0; }
 function battingOBP(s){ const denom=s.AB+s.BB; return denom>0 ? (s.H+s.BB)/denom : 0; }
@@ -8909,9 +9224,13 @@ function pitcherRecordDisplay(name, seasonIdx, wls){
   if(!wls) return '';
   const bucket = (typeof PLAYOFF_MATCH_REF!=='undefined' && PLAYOFF_MATCH_REF) ? (typeof SEASON!=='undefined' && SEASON && SEASON.playoffPitchStats) : (typeof SEASON!=='undefined' && SEASON && SEASON.seasonPitchStats);
   const career = (seasonIdx!=null && bucket && bucket[seasonIdx+':'+name]) || {W:0,L:0,SV:0};
-  if(wls.winningPitcher===name) return ` (W, ${career.W+1}-${career.L})`;
-  if(wls.losingPitcher===name) return ` (L, ${career.W}-${career.L+1})`;
-  if(wls.savePitcher===name) return ` (S, ${career.SV+1})`;
+  // Live, in-progress game: today's decision hasn't been merged into the season bucket yet, so it
+  // still needs a +1 to show the correct resulting record. A historical box score's bucket already
+  // includes this exact decision permanently, so no bump is needed there.
+  const bump = BOX_SCORE_SNAPSHOT ? 0 : 1;
+  if(wls.winningPitcher===name) return ` (W, ${career.W+bump}-${career.L})`;
+  if(wls.losingPitcher===name) return ` (L, ${career.W}-${career.L+bump})`;
+  if(wls.savePitcher===name) return ` (S, ${career.SV+bump})`;
   return '';
 }
 // Real ballpark names for the pre-built MLB teams, matched by team abbreviation — team NAMES and
@@ -9009,12 +9328,20 @@ function pitchingTableHTML(teamKey){
 }
 
 function renderBoxScore(){
+  // Viewing a PAST game (tapped from the schedule): temporarily swap the live GS/TEAMS globals for
+  // the snapshot's own saved copies so every table/helper below (scoreboardTableHTML, battingTableHTML,
+  // pitchingTableHTML, determineWinLossPitchers, combinedBatLine/combinedPitchLine, ...) works
+  // completely unmodified against an old game — they all read GS/TEAMS directly rather than taking
+  // them as parameters, so restoring the real globals right after is what makes this safe to do.
+  const savedGS = GS, savedTEAMS = TEAMS;
+  if(BOX_SCORE_SNAPSHOT){ GS = BOX_SCORE_SNAPSHOT.gs; TEAMS = BOX_SCORE_SNAPSHOT.teams; }
+
   const ov = el('div','boxoverlay');
 
   const top = el('div','mattop');
   const word = el('div','matwordmark','Diamond Chart<span>Box Score</span>');
   const closeBtn = el('button','backbtn','Close');
-  closeBtn.onclick = ()=>{ BOX_VIEW=false; render(); };
+  closeBtn.onclick = ()=>{ BOX_VIEW=false; BOX_SCORE_SNAPSHOT=null; render(); };
   top.appendChild(word); top.appendChild(closeBtn);
   ov.appendChild(top);
 
@@ -9055,6 +9382,8 @@ function renderBoxScore(){
 
   ov.appendChild(body);
   root.appendChild(ov);
+
+  if(BOX_SCORE_SNAPSHOT){ GS = savedGS; TEAMS = savedTEAMS; }
 }
 function currentGameStarter(teamKey){
   const p = TEAMS[teamKey].pitchers[GS.pitcherIdx[teamKey]];
