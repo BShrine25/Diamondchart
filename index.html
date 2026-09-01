@@ -1238,6 +1238,7 @@ function cloneTeamForGame(poolTeam, starterIdx, seasonIdx){
   const idx = (starterIdx!==undefined && rotation[starterIdx]) ? starterIdx : 0;
   return { city:poolTeam.city, nick:poolTeam.nick, defense:{...poolTeam.defense}, color:poolTeam.color, abbr:poolTeam.abbr,
     lineup, bench, rotation, bullpen, pitchers:[rotation[idx], ...bullpen], rosterSize:poolTeam.rosterSize,
+    extra: poolTeam.extra, // shared reference (not cloned) — a call-up during pre-game setup applies to the real SEASON roster, and this keeps the in-game view of "who's left in the minors" in sync with that automatically
     seasonIdx: seasonIdx===undefined ? null : seasonIdx };
 }
 // Draft Season house rule: the playoff rotation trims to the top 4 starters — the 5th starter isn't
@@ -1260,6 +1261,7 @@ function cloneTeamForPlayoffGame(poolTeam, starterIdx, seasonIdx){
   }
   return { city:poolTeam.city, nick:poolTeam.nick, defense:{...poolTeam.defense}, color:poolTeam.color, abbr:poolTeam.abbr,
     lineup, bench, rotation, bullpen, pitchers, rosterSize:poolTeam.rosterSize,
+    extra: poolTeam.extra,
     seasonIdx: seasonIdx===undefined ? null : seasonIdx };
 }
 
@@ -1497,6 +1499,60 @@ function canSignFreeAgent(teamIdx, player){
 // flat post-draft team shape instead of the in-progress draftRoster shape. Two-way players never
 // reach here as a single pool entry (finalizeDraftedTeam already split them into independent
 // pitcher/batter cards before free agency ever sees the pool), so this only ever handles one job.
+// Pure structural swap: replaces `outgoingName` wherever they currently are on `team` (lineup/bench/
+// rotation/bullpen) with `incoming`, preserving the outgoing player's exact lineup spot (including
+// `.pos`) if he had one. Only swaps like-for-like (a pitcher can only replace a pitcher, a batter only
+// a batter) — returns the removed outgoing player object, or null if not found or mismatched types.
+function applyRosterSwap(team, incoming, outgoingName){
+  const outgoing = [...team.lineup, ...team.bench, ...team.rotation, ...team.bullpen].find(p=>p.name===outgoingName);
+  if(!outgoing) return null;
+  const outgoingIsPitcher = outgoing.role==='SP' || outgoing.role==='RP';
+  const incomingIsPitcher = incoming.role==='SP' || incoming.role==='RP';
+  if(outgoingIsPitcher !== incomingIsPitcher) return null;
+
+  const incomingClean = Object.assign({}, incoming);
+  delete incomingClean.drafted; delete incomingClean.origin; delete incomingClean.ptype;
+
+  const lineupIdx = team.lineup.findIndex(p=>p.name===outgoingName);
+  const benchIdx = team.bench.findIndex(p=>p.name===outgoingName);
+  const rotIdx = team.rotation.findIndex(p=>p.name===outgoingName);
+  const bullIdx = team.bullpen.findIndex(p=>p.name===outgoingName);
+
+  if(lineupIdx>=0){ team.lineup[lineupIdx] = Object.assign({}, incomingClean, {pos:team.lineup[lineupIdx].pos}); }
+  else if(benchIdx>=0){ team.bench[benchIdx] = incomingClean; }
+  else if(rotIdx>=0){ team.rotation[rotIdx] = incomingClean; }
+  else if(bullIdx>=0){ team.bullpen[bullIdx] = incomingClean; }
+  else return null;
+
+  team.pitchers = [team.rotation[0], ...team.bullpen].filter(Boolean);
+  return outgoing;
+}
+// MLB Season only: swaps a "minor leaguer" (team.extra — the leftover players who didn't make a real
+// team's original 22-man build) onto the active roster in place of a currently active player, who's
+// sent down to team.extra in exchange. Unlike a free-agent drop, both players stay on the very same
+// team, so stats need zero special handling either way — they were already keyed off each player's
+// own name and this team's index the whole time (see mergedStatsByPlayer), so nothing resets and
+// nothing needs to move. A demoted BATTER's mandatory-bench-start streak carries over to whoever
+// replaces him, exactly like a free-agent swap (see signFreeAgentToTeam / dropPlayerFromTeam above) —
+// pitchers never inherit stamina/rest state.
+function callUpPlayer(teamIdx, incoming, outgoingName){
+  const team = SEASON.teams[teamIdx];
+  const outgoing = applyRosterSwap(team, incoming, outgoingName);
+  if(!outgoing) return false;
+  if(!team.extra) team.extra = [];
+  team.extra.push(Object.assign({}, outgoing));
+  const extraIdx = team.extra.indexOf(incoming);
+  if(extraIdx>=0) team.extra.splice(extraIdx,1);
+  const outgoingIsPitcher = outgoing.role==='SP' || outgoing.role==='RP';
+  if(!outgoingIsPitcher){
+    if(!SEASON.benchRest) SEASON.benchRest = {};
+    const key = teamIdx+':'+outgoing.name;
+    const inheritedStreak = SEASON.benchRest[key] || 0;
+    delete SEASON.benchRest[key];
+    SEASON.benchRest[teamIdx+':'+incoming.name] = inheritedStreak;
+  }
+  return true;
+}
 function signFreeAgentToTeam(teamIdx, player){
   const team = SEASON.teams[teamIdx];
   const isPitcher = player.role==='SP' || player.role==='RP';
@@ -1571,7 +1627,8 @@ function playerCurrentTeamIdx(name){
   for(let i=0;i<SEASON.teams.length;i++){
     const t = SEASON.teams[i];
     if(t.lineup.some(p=>p.name===name) || t.bench.some(p=>p.name===name) ||
-       t.rotation.some(p=>p.name===name) || t.bullpen.some(p=>p.name===name)) return i;
+       t.rotation.some(p=>p.name===name) || t.bullpen.some(p=>p.name===name) ||
+       (t.extra||[]).some(p=>p.name===name)) return i;
   }
   return -1;
 }
@@ -1681,13 +1738,14 @@ function handleDraftCompletion(){
   } else {
     const teamA = finalizeDraftedTeam(DRAFT.rosters[0], DRAFT.names[0], '#0B3D91');
     const teamB = finalizeDraftedTeam(DRAFT.rosters[1], DRAFT.names[1], '#C8102E');
-    rollForHomeAway(DRAFT.names[0], DRAFT.names[1], (aWon)=>{
-      TEAMS.home = aWon ? teamA : teamB;
-      TEAMS.away = aWon ? teamB : teamA;
-      if(DRAFT_VS_CPU) HUMAN_SIDE = aWon ? 'home' : 'away'; // drafter 0 ("You") — which physical side depends on the roll now
+    rollForHomeAway(DRAFT.names[0], DRAFT.names[1], (winnerIsA, tookHome)=>{
+      const aIsHome = (winnerIsA === tookHome);
+      TEAMS.home = aIsHome ? teamA : teamB;
+      TEAMS.away = aIsHome ? teamB : teamA;
+      if(DRAFT_VS_CPU) HUMAN_SIDE = aIsHome ? 'home' : 'away'; // drafter 0 ("You") — which physical side depends on the roll now
       SCREEN='roster'; ROSTER_STEP='away';
       render();
-    });
+    }, {isCpuB: DRAFT_VS_CPU});
   }
   return false;
 }
@@ -3884,6 +3942,9 @@ let SEASON_AWAY_HUMAN=true, SEASON_HOME_HUMAN=true;
 // player once the draft finishes; FA_VIEW/FA_FILTER/FA_TEAM_IDX drive the browsing screen the same
 // way DRAFT_FILTER/DRAFT_ROSTER_VIEW drive the draft's own pool screen.
 let FA_VIEW=false, FA_FILTER='ALL', FA_TEAM_IDX=0;
+// {teamIdx, player} — set when "Call Up" is tapped on a minor leaguer in the season roster view;
+// shows a picker of who on the active roster to send down in exchange.
+let SEASON_CALLUP_PICK = null;
 let PLAYOFF_SCHEDULE_VIEW=false;
 // Set while viewing a PAST game's box score from the schedule (as opposed to the live in-progress
 // game) — see renderBoxScore, which temporarily swaps the GS/TEAMS globals for the snapshot's own
@@ -4005,6 +4066,7 @@ function renderReal(){
   else if(SCREEN==='roster') renderRoster();
   if(SCREEN==='drafting' && DRAFT_ROSTER_VIEW){ renderDraftRosterView(); }
   if(SCREEN==='seasonhub' && SEASON_ROSTER_VIEW){ renderSeasonRosterView(); }
+  if(SCREEN==='seasonhub' && SEASON_ROSTER_VIEW && SEASON_CALLUP_PICK){ renderSeasonCallUpPicker(); }
   if(SCREEN==='seasonhub' && SEASON_SCHEDULE_VIEW){ renderSeasonScheduleView(); }
   if(SCREEN==='seasonhub' && SEASON_STATS_VIEW){ renderSeasonStatsView(); }
   if(SCREEN==='seasonhub' && SEASON_LEADERS_VIEW){ renderSeasonLeadersView(); }
@@ -4074,33 +4136,67 @@ function renderSubPreviewOverlay(){
   root.appendChild(overlay);
 }
 // Rolls a d20 for each side to settle home field before any single game (Vs Computer, Pass & Play,
-// Draft Mode) or tournament match — no more free-choice "Play Home"/"Play Away" screen. Whoever rolls
-// higher is simply, automatically Home; there's never a real reason to prefer away, so the "pick" the
-// old screens offered wasn't a meaningful choice to begin with, human or CPU. Ties reroll until broken.
-// onDone(labelAWon: boolean) fires once the person taps through the result.
-function rollForHomeAway(labelA, labelB, onDone){
+// Draft Mode) or tournament match — no more free-choice "Play Home"/"Play Away" screen up front.
+// Both sides roll and the result is shown as it happens (A first, then B, then the winner), and only
+// THEN does the actual winner get a real choice of Home or Away — except a CPU winner, which always
+// takes Home automatically since there's never a real strategic reason for it to do otherwise. Ties
+// reroll until broken. onDone(winnerIsA: boolean, winnerTookHome: boolean) fires once resolved.
+// opts: {isCpuA, isCpuB} — omit/false for a human on that side.
+function rollForHomeAway(labelA, labelB, onDone, opts){
+  opts = opts || {};
   let rollA, rollB;
   do { rollA = randInt(1,20); rollB = randInt(1,20); } while(rollA===rollB);
-  PREGAME_ROLL = { labelA, labelB, rollA, rollB, onDone };
+  const rollObj = { labelA, labelB, finalRollA:rollA, finalRollB:rollB, shownA:null, shownB:null,
+    stage:'rollingA', isCpuA:!!opts.isCpuA, isCpuB:!!opts.isCpuB, onDone };
+  PREGAME_ROLL = rollObj;
   render();
+  setTimeout(()=>{
+    if(PREGAME_ROLL !== rollObj) return; // this roll was dismissed or superseded before its own timer fired
+    rollObj.shownA = rollObj.finalRollA;
+    rollObj.stage = 'rollingB';
+    render();
+    setTimeout(()=>{
+      if(PREGAME_ROLL !== rollObj) return;
+      rollObj.shownB = rollObj.finalRollB;
+      rollObj.stage = 'result';
+      render();
+    }, 700);
+  }, 700);
 }
 function renderPregameRollOverlay(){
-  const { labelA, labelB, rollA, rollB, onDone } = PREGAME_ROLL;
-  const winnerIsA = rollA > rollB;
+  const p = PREGAME_ROLL;
   const overlay = el('div','confirm-overlay');
   const box = el('div','confirm-box');
   box.appendChild(el('div','display','Roll for Home Field'));
-  const rollLine = el('div','rulesnote', `${labelA} rolls <b>${rollA}</b> \u00b7 ${labelB} rolls <b>${rollB}</b>`);
-  rollLine.style.marginTop='10px';
-  box.appendChild(rollLine);
-  const resultLine = el('div','rulesnote', `<b>${winnerIsA?labelA:labelB}</b> wins the roll and bats in the bottom half (Home).`);
-  resultLine.style.marginTop='6px';
-  box.appendChild(resultLine);
-  const row = el('div','btnrow'); row.style.marginTop='16px';
-  const btn = el('button','btn','Continue');
-  btn.onclick = ()=>{ const cb=onDone; PREGAME_ROLL=null; cb(winnerIsA); };
-  row.appendChild(btn);
-  box.appendChild(row);
+  const lineA = el('div','rulesnote', `${p.labelA}: ${p.shownA!==null ? `<b>${p.shownA}</b>` : 'rolling\u2026'}`);
+  lineA.style.marginTop='10px';
+  box.appendChild(lineA);
+  const lineB = el('div','rulesnote', `${p.labelB}: ${p.shownB!==null ? `<b>${p.shownB}</b>` : (p.stage==='rollingA' ? '\u2014' : 'rolling\u2026')}`);
+  box.appendChild(lineB);
+
+  if(p.stage==='result'){
+    const winnerIsA = p.finalRollA > p.finalRollB;
+    const winnerLabel = winnerIsA ? p.labelA : p.labelB;
+    const winnerIsCpu = winnerIsA ? p.isCpuA : p.isCpuB;
+    const resultLine = el('div','rulesnote', `<b>${winnerLabel}</b> wins the roll.`);
+    resultLine.style.marginTop='6px';
+    box.appendChild(resultLine);
+    const row = el('div','btnrow'); row.style.marginTop='16px';
+    if(winnerIsCpu){
+      box.appendChild(el('div','rulesnote', `${winnerLabel} takes Home.`));
+      const btn = el('button','btn','Continue');
+      btn.onclick = ()=>{ const cb=p.onDone; PREGAME_ROLL=null; cb(winnerIsA, true); };
+      row.appendChild(btn);
+    } else {
+      box.appendChild(el('div','rulesnote', `${winnerLabel} \u2014 pick Home or Away:`));
+      const homeBtn = el('button','btn','Take Home');
+      homeBtn.onclick = ()=>{ const cb=p.onDone; PREGAME_ROLL=null; cb(winnerIsA, true); };
+      const awayBtn = el('button','btn secondary','Take Away');
+      awayBtn.onclick = ()=>{ const cb=p.onDone; PREGAME_ROLL=null; cb(winnerIsA, false); };
+      row.appendChild(homeBtn); row.appendChild(awayBtn);
+    }
+    box.appendChild(row);
+  }
   overlay.appendChild(box);
   root.appendChild(overlay);
 }
@@ -4373,7 +4469,11 @@ function renderSubmenu(){
   if(MENU_CATEGORY==='single'){
     items.push({label:'VS (CPU)', desc:'Roll for home field; CPU plays the other side.', enabled:true, onclick:()=>{
       MODE='ai';
-      rollForHomeAway('You', 'CPU', (youWon)=>{ HUMAN_SIDE = youWon ? 'home' : 'away'; SCREEN='teamselect'; PICK_STAGE='away'; STARTER_PICK=0; render(); });
+      rollForHomeAway('You', 'CPU', (winnerIsA, tookHome)=>{
+        const youAreHome = (winnerIsA === tookHome);
+        HUMAN_SIDE = youAreHome ? 'home' : 'away';
+        SCREEN='teamselect'; PICK_STAGE='away'; STARTER_PICK=0; render();
+      }, {isCpuB:true});
     }});
     items.push({label:'Draft', desc:'Draft your team; the CPU drafts and plays the other side.', enabled:true, onclick:()=>{ MODE='ai'; DRAFT_VS_CPU=true; SCREEN='draftsetup'; render(); }});
     items.push({label:'MLB Season', desc:'Control any number of real MLB teams \u2014 the rest play out on their own.', enabled:true, onclick:()=>{ MODE='ai'; SCREEN = (SEASON && SEASON.teams && SEASON.statsScope==='mlb') ? 'seasonhub' : 'mlbseasonsetup'; render(); }});
@@ -5033,7 +5133,7 @@ function renderSeasonRosterView(){
 
   const chips = el('div','draftfilters');
   SEASON.teams.forEach((team,i)=>{
-    const b = el('button','draftfilterbtn'+(SEASON_ROSTER_TEAM_IDX===i?' active':''), SEASON.names[i]);
+    const b = el('button','draftfilterbtn'+(SEASON_ROSTER_TEAM_IDX===i?' active':''), SEASON.names ? SEASON.names[i] : team.nick);
     b.onclick = ()=>{ SEASON_ROSTER_TEAM_IDX=i; render(); };
     chips.appendChild(b);
   });
@@ -5052,14 +5152,16 @@ function renderSeasonRosterView(){
   navRow.appendChild(prevBtn); navRow.appendChild(nextBtn);
   body.appendChild(navRow);
 
-  body.appendChild(el('div','team-label', `${SEASON.names[i]}${isCpu?' \u00b7 CPU':''}`));
+  body.appendChild(el('div','team-label', `${SEASON.names ? SEASON.names[i] : `${team.city} ${team.nick}`}${isCpu?' \u00b7 CPU':''}`));
   const canManage = isDraftSeasonScope();
+  const isMlbSeason = SEASON.statsScope==='mlb';
   const addDropBtn = (row, p)=>{
     if(!canManage || p.name==='(unfilled)') return;
     const dropBtn = el('button','btn small secondary','Drop'); dropBtn.style.marginLeft='auto';
     dropBtn.onclick = (e)=>{ e.stopPropagation(); showConfirm(`Drop ${p.name} from ${SEASON.names[i]}? He\\u2019ll return to the free agent pool.`, ()=>{ dropPlayerFromTeam(i, p); render(); }); };
     row.appendChild(dropBtn);
   };
+  body.appendChild(el('div','sub2', `Active Roster \u2014 ${team.rosterSize||22}-man`));
   const list = el('div','plist');
   team.lineup.forEach(p=>{
     const row = el('div','prow');
@@ -5093,8 +5195,63 @@ function renderSeasonRosterView(){
     faBtn.onclick = ()=>{ FA_VIEW=true; SEASON_ROSTER_VIEW=false; FA_TEAM_IDX=i; render(); };
     body.appendChild(faBtn);
   }
+  // MLB Season only: everyone else on this team who didn't make the original 22-man build — a real
+  // team may have none at all, in which case this section just stays empty rather than disappearing,
+  // so it's clear at a glance whether there's anyone available to call up.
+  if(isMlbSeason){
+    body.appendChild(el('div','team-label','Minor Leaguers')).style.marginTop='16px';
+    const minorList = el('div','plist');
+    const extras = team.extra || [];
+    if(!extras.length){
+      minorList.appendChild(el('div','rulesnote','No one currently in the minors for this team.'));
+    }
+    extras.forEach(p=>{
+      const isPitcher = p.role==='SP' || p.role==='RP';
+      const row = el('div','prow clickable');
+      row.innerHTML = `<div class="pos">${isPitcher?p.role:(p.pos||'?')}</div><div class="nm">${p.name}${p.twoWay?' <span class="twoway-tag">Two-Way</span>':''}</div><div class="sub2">${p.points} pt</div>`;
+      const upBtn = el('button','btn small secondary','Call Up'); upBtn.style.marginLeft='auto';
+      upBtn.onclick = (e)=>{ e.stopPropagation(); SEASON_CALLUP_PICK = {teamIdx:i, player:p}; render(); };
+      row.appendChild(upBtn);
+      minorList.appendChild(row);
+    });
+    body.appendChild(minorList);
+  }
   ov.appendChild(body);
   root.appendChild(ov);
+}
+// Shown after tapping "Call Up" on a minor leaguer — pick who on the active roster goes down to the
+// minors in exchange. Only like-for-like swaps are offered (a pitcher minor leaguer can only bump a
+// pitcher, a batter only a batter) since applyRosterSwap enforces the same rule underneath.
+function renderSeasonCallUpPicker(){
+  const { teamIdx, player } = SEASON_CALLUP_PICK;
+  const team = SEASON.teams[teamIdx];
+  const isPitcher = player.role==='SP' || player.role==='RP';
+  const overlay = el('div','confirm-overlay');
+  const box = el('div','confirm-box');
+  box.appendChild(el('div','display', `Call Up ${player.name}`));
+  const note = el('div','rulesnote', 'Choose who comes off the active roster to make room. His accumulated stats stay exactly where they are — they just stop growing until he\u2019s called back up.');
+  note.style.marginTop='10px';
+  box.appendChild(note);
+
+  const candidates = isPitcher ? [...team.rotation, ...team.bullpen] : [...team.lineup.filter(p=>p.name!=='(unfilled)'), ...team.bench];
+  const list = el('div','plist'); list.style.marginTop='12px';
+  candidates.forEach(cand=>{
+    const row = el('div','prow clickable');
+    row.innerHTML = `<div class="pos">${isPitcher?cand.role:(cand.pos||'BN')}</div><div class="nm">${cand.name}</div><div class="sub2">${cand.points} pt</div>`;
+    row.onclick = ()=>{
+      callUpPlayer(teamIdx, player, cand.name);
+      SEASON_CALLUP_PICK = null;
+      render();
+    };
+    list.appendChild(row);
+  });
+  box.appendChild(list);
+
+  const cancelBtn = el('button','btn small secondary','Cancel'); cancelBtn.style.marginTop='12px';
+  cancelBtn.onclick = ()=>{ SEASON_CALLUP_PICK=null; render(); };
+  box.appendChild(cancelBtn);
+  overlay.appendChild(box);
+  root.appendChild(overlay);
 }
 
 // Free agent pool browser — same position-tab filtering as the draft's own pool screen (a player
@@ -7160,8 +7317,9 @@ function recordTourneyResult(ref, aScore, bScore){
 function startTourneyMatch(ref, match){
   const nameA = `${TEAM_POOL[match.a].city} ${TEAM_POOL[match.a].nick}`;
   const nameB = `${TEAM_POOL[match.b].city} ${TEAM_POOL[match.b].nick}`;
-  rollForHomeAway(nameA, nameB, (aWon)=>{
-    TOURNEY_MATCH_FLIPPED = !aWon; // aWon=false means slot B rolled higher and plays home instead
+  rollForHomeAway(nameA, nameB, (winnerIsA, tookHome)=>{
+    const aIsHome = (winnerIsA === tookHome);
+    TOURNEY_MATCH_FLIPPED = !aIsHome; // flipped = slot B ends up playing home instead of the default a=away/b=home
     TOURNEY_PENDING_MATCH = {ref, match};
     SCREEN = 'tourneycontrol'; render();
   });
@@ -7522,9 +7680,47 @@ function moveLineupSlot(teamKey, idx, dir){
 // Both branches show the same full physical-card replica used in-game
 // (renderFullCard) so "click a player, see all their numbers" works the same
 // way whether they're currently starting or sitting on the bench.
+// Calling up a minor leaguer from the pre-game lineup screen — same underlying transaction as the
+// "Call Up" button on the Team Rosters screen (callUpPlayer, permanent, updates SEASON.teams and
+// carries over bench-rest inheritance for a demoted batter), plus a matching swap applied directly to
+// today's already-cloned TEAMS[tk] so the change is reflected immediately in the game about to start.
+function renderCallUpPicker(t, tk, minorLeaguerName){
+  const minorLeaguer = (t.extra||[]).find(p=>p.name===minorLeaguerName);
+  const ov = el('div','matoverlay');
+  const top = el('div','mattop');
+  top.innerHTML = `<div class="matwordmark">Call Up ${minorLeaguer.name}<span>${t.city} ${t.nick}</span></div>`;
+  const closeBtn = el('button','backbtn','Cancel');
+  closeBtn.onclick = ()=>{ LINEUP_EDIT=null; render(); };
+  top.appendChild(closeBtn);
+  ov.appendChild(top);
+
+  const body = el('div','matbody');
+  const cardWrap = el('div','fullcard-single-wrap');
+  cardWrap.appendChild(renderFullCard(minorLeaguer, t, {isPitcher: minorLeaguer.role==='SP'||minorLeaguer.role==='RP'}));
+  body.appendChild(cardWrap);
+  body.appendChild(el('div','rulesnote', 'Choose who comes off the active roster to make room. His accumulated stats stay exactly where they are — they just stop growing until he\u2019s called back up.'));
+
+  const isPitcher = minorLeaguer.role==='SP' || minorLeaguer.role==='RP';
+  const candidates = isPitcher ? [...t.rotation, ...t.bullpen] : [...t.lineup.filter(p=>p.name!=='(unfilled)'), ...t.bench];
+  const list = el('div','plist'); list.style.marginTop='10px';
+  candidates.forEach(cand=>{
+    const row = el('div','prow clickable');
+    row.innerHTML = `<div class="pos">${isPitcher?cand.role:(cand.pos||'BN')}</div><div class="nm">${cand.name}</div><div class="sub2">${cand.points} pt</div>`;
+    row.onclick = ()=>{
+      if(t.seasonIdx!=null) callUpPlayer(t.seasonIdx, minorLeaguer, cand.name);
+      applyRosterSwap(t, minorLeaguer, cand.name);
+      LINEUP_EDIT=null; render();
+    };
+    list.appendChild(row);
+  });
+  body.appendChild(list);
+  ov.appendChild(body);
+  root.appendChild(ov);
+}
 function renderLineupEditPicker(){
   const { team, mode, pos, name } = LINEUP_EDIT;
   const t = TEAMS[team];
+  if(mode==='callup'){ renderCallUpPicker(t, team, name); return; }
   const isBench = mode==='bench';
   const player = isBench ? t.bench.find(x=>x.name===name) : t.lineup.find(x=>x.pos===pos);
   const ov = el('div','matoverlay');
@@ -7671,6 +7867,28 @@ function renderRosterTeamBlock(wrap, tk){
     bullList.appendChild(row);
   });
   wrap.appendChild(bullList);
+
+  // MLB Season only: minor leaguers are pickable right here too — tapping one opens the same swap
+  // picker as everywhere else, and immediately calls them up (updating the real season roster, not
+  // just today's lineup) so the person can use them for this game without a separate trip to the
+  // Team Rosters screen first.
+  const isMlbSeasonGame = t.seasonIdx!=null && typeof SEASON!=='undefined' && SEASON && SEASON.statsScope==='mlb';
+  if(isMlbSeasonGame){
+    wrap.appendChild(el('div','team-label','Minor Leaguers'));
+    const minorList = el('div','plist'+sideClass);
+    const extras = t.extra || [];
+    if(!extras.length){
+      minorList.appendChild(el('div','rulesnote','No one currently in the minors for this team.'));
+    }
+    extras.forEach(p=>{
+      const isPitcher = p.role==='SP' || p.role==='RP';
+      const row = el('div','prow clickable');
+      row.innerHTML = `<div class="pos">${isPitcher?p.role:(p.pos||'?')}</div><div class="nm">${p.name}${p.twoWay?' <span class="twoway-tag">Two-Way</span>':''}</div><div class="sub2">${p.points} pt</div>`;
+      row.onclick = ()=>{ LINEUP_EDIT = {team:tk, mode:'callup', name:p.name}; render(); };
+      minorList.appendChild(row);
+    });
+    wrap.appendChild(minorList);
+  }
 }
 
 // Roster/lineup screen — a two-step flow (ROSTER_STEP: 'away' then 'home') so
