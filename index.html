@@ -3339,6 +3339,7 @@ function newGameState(mode){
     absChallenges:{away:2, home:2},
     absExtraInningsGranted:9,
     absPending:null, absChallengeResult:null,
+    wasSimulated:false, // hidden points system — set true the moment runSim() is ever called during this game
     subSlotIdx:null,
     subBaseIdx:null,
     log:[],
@@ -4357,6 +4358,7 @@ function simStep(){
 // Runs simStep() in a tight synchronous loop until stopFn() says to stop, the game ends, nothing
 // more can progress, or the safety guard is hit — then paints once for real.
 function runSim(stopFn, maxSteps){
+  if(GS) GS.wasSimulated = true; // hidden points system: disqualifies this whole game from per-game points, no matter how small a portion gets fast-forwarded
   SIM_ACTIVE = true;
   let steps = 0;
   try{
@@ -5916,6 +5918,149 @@ function archiveCompletedSeason(scope){
     localStorage.setItem(`${STATS_STORAGE_PREFIX}:${scope}:seasons`, JSON.stringify(list));
   } catch(e){}
 }
+
+// ---------------- HIDDEN POINTS SYSTEM (store currency — no UI yet) ----------------
+// Everything below accrues a running balance silently in the background so it's already correct and
+// populated whenever the store actually ships — nothing here is shown to the person anywhere yet.
+// Kept entirely separate from career/season stats above; this is currency bookkeeping, not gameplay
+// stats, even though it reuses the same localStorage-based persistence style.
+//
+// "Per account": CURRENT_PLAYER.id if logged in (the same identity online multiplayer already keys
+// games to), or a fixed local bucket if playing without ever logging in. There's no server-side wallet
+// yet, so this stays localStorage-only for now — if the store needs points to follow an account across
+// devices later, awardPoints()/getPointsBalance() are the only two functions that would need to start
+// talking to Supabase instead, since nothing else ever touches localStorage directly for this.
+const POINTS_STORAGE_PREFIX = 'diamondchart:points';
+function pointsAccountKey(){ return (CURRENT_PLAYER && CURRENT_PLAYER.id) ? `player:${CURRENT_PLAYER.id}` : 'local'; }
+function pointsStorageKey(){ return `${POINTS_STORAGE_PREFIX}:${pointsAccountKey()}`; }
+function getPointsBalance(){
+  try{
+    const raw = localStorage.getItem(pointsStorageKey());
+    if(raw){ const parsed = JSON.parse(raw); return parsed.balance||0; }
+  } catch(e){}
+  return 0;
+}
+function awardPoints(amount){
+  if(!amount || amount<=0) return;
+  try{ localStorage.setItem(pointsStorageKey(), JSON.stringify({ balance: getPointsBalance() + amount })); }
+  catch(e){}
+  // Deliberately no render() — there's no store UI yet for this to show up in.
+}
+
+// Point values exactly as specified. Local and Online Draft Season are two entirely separate tables
+// (online pays out far more, and has no games-simulated eligibility gate at all — see
+// awardSeasonMilestone below).
+const POINT_TABLES = {
+  tournament:     { winGame:10, loseGame:5,  makeFinals:10,  winTournament:25 },
+  mlb:            { winGame:10, loseGame:5,  winDivision:50, makeWildCard:30, winPlayoffGame:20, losePlayoffGame:10, winLCS:100, winWorldSeries:250 },
+  'draft-local':  { winGame:10, loseGame:5,  makePlayoffs:25,  winPlayoffGame:20, losePlayoffGame:10, makeFinals:50,  winChampionship:150 },
+  'draft-online': { winGame:25, loseGame:10, makePlayoffs:100, winPlayoffGame:50, losePlayoffGame:25, makeFinals:250, winChampionship:500 },
+};
+
+// Season-length multipliers, each mode's own bracket per spec. 0 means "too short to qualify at all."
+function mlbSeasonMultiplier(gamesPerTeam, simRatio){
+  if(gamesPerTeam < 29) return 0;
+  if(gamesPerTeam >= 162) return simRatio<=0.5 ? 5 : 3; // full season still needs the sim-ratio requirement for the top tier — otherwise falls back to the 87+ tier it also clears
+  if(gamesPerTeam >= 87) return 3;
+  if(gamesPerTeam >= 58) return 2;
+  return 1;
+}
+// Draft Season (local): 7-14=1x,15-28=2x,29-42=3x,... anything over 84 is a flat 10x cap (an explicit
+// cap per spec, not a continuation of the linear +1-per-14-games pattern).
+function draftSeasonMultiplier(gamesPerTeam){
+  if(gamesPerTeam < 7) return 0;
+  if(gamesPerTeam > 84) return 10;
+  if(gamesPerTeam <= 14) return 1; // first tier (7-14) is 8 games wide; every tier after is 14 wide
+  return 2 + Math.floor((gamesPerTeam - 15) / 14);
+}
+// Online Draft Season: 7-14=1x, 15-28=3x, 29-42=5x, 43+ =10x.
+function onlineDraftSeasonMultiplier(gamesPerTeam){
+  if(gamesPerTeam < 7) return 0;
+  if(gamesPerTeam >= 43) return 10;
+  if(gamesPerTeam >= 29) return 5;
+  if(gamesPerTeam >= 15) return 3;
+  return 1;
+}
+function seasonMultiplierFor(scopeKey, teamIdx){
+  const games = teamScheduledGameCount(teamIdx);
+  if(scopeKey==='mlb') return mlbSeasonMultiplier(games, teamSimRatio(teamIdx));
+  if(scopeKey==='draft-local') return draftSeasonMultiplier(games);
+  if(scopeKey==='draft-online') return onlineDraftSeasonMultiplier(games);
+  return 1; // tournament: flat, no length-based scaling
+}
+
+// How many games a team is actually scheduled for, counted straight from the real schedule — robust
+// to every schedule type (Custom, Full, Division-Heavy, etc.) rather than depending on a single
+// "games per team" setting that not every schedule builder even has.
+function teamScheduledGameCount(teamIdx){
+  if(!SEASON || !SEASON.schedule) return 0;
+  return SEASON.schedule.filter(g=>g.awayIdx===teamIdx || g.homeIdx===teamIdx).length;
+}
+// Is teamIdx one that THIS device/account actually controls? Local season: any human-controlled seat
+// counts (there's only one points ledger active on this device regardless of how many people are
+// physically sharing it). Online season: only the seat actually assigned to CURRENT_PLAYER counts —
+// SEASON.humanControlled marks every occupied online seat as "human," not specifically "mine."
+function isMyControlledTeam(teamIdx){
+  if(!SEASON) return false;
+  if(typeof ONLINE_SEASON!=='undefined' && ONLINE_SEASON){
+    return !!(ONLINE_SEASON.seatPlayerIds && CURRENT_PLAYER && ONLINE_SEASON.seatPlayerIds[teamIdx]===CURRENT_PLAYER.id);
+  }
+  return !!(SEASON.humanControlled && SEASON.humanControlled[teamIdx]);
+}
+// Per-team, per-season tally of games actually played vs simulated — persisted on SEASON itself (so
+// it survives a reload the same way standings/stats do), and what the "\u226450% simulated"
+// milestone-eligibility gate is checked against. Tracked independently per team, since one person
+// controlling several teams in the same season can have a different sim ratio for each of them.
+function trackTeamSimStatus(teamIdx, wasSimulated){
+  if(!SEASON) return;
+  if(!SEASON.pointsSimTrack) SEASON.pointsSimTrack = {};
+  const rec = SEASON.pointsSimTrack[teamIdx] || (SEASON.pointsSimTrack[teamIdx] = {played:0, simulated:0});
+  rec.played += 1;
+  if(wasSimulated) rec.simulated += 1;
+}
+function teamSimRatio(teamIdx){
+  const rec = SEASON && SEASON.pointsSimTrack && SEASON.pointsSimTrack[teamIdx];
+  return (rec && rec.played) ? rec.simulated/rec.played : 0;
+}
+function teamMeetsSimGate(teamIdx){ return teamSimRatio(teamIdx) <= 0.5; }
+
+// The one function every completed game (regular season, playoff, or tournament) funnels through to
+// award its per-game win/loss points. Handles the local-multiplayer double-count rule itself: if this
+// device controls BOTH sides of the game, only the winning side's points are paid out — never both a
+// win and a loss bonus for the same account just because they played themselves. If only one side (or
+// neither) is controlled, each controlled side is judged on its own actual result, independently.
+function awardGamePoints(scopeKey, awayId, homeId, awayControlled, homeControlled, awayWon, wasSimulated, isPlayoff){
+  if(!awayControlled && !homeControlled) return;
+  if(wasSimulated) return; // any part of this specific game being simmed disqualifies it entirely
+  const table = POINT_TABLES[scopeKey];
+  if(!table) return;
+  const winPts = isPlayoff ? table.winPlayoffGame : table.winGame;
+  const losePts = isPlayoff ? table.losePlayoffGame : table.loseGame;
+  if(winPts===undefined || losePts===undefined) return; // e.g. tournament has no separate playoff tier — shouldn't be called with isPlayoff true for it
+  if(awayControlled && homeControlled){
+    const winnerId = awayWon ? awayId : homeId;
+    awardPoints(winPts * seasonMultiplierFor(scopeKey, winnerId));
+  } else {
+    if(awayControlled) awardPoints((awayWon ? winPts : losePts) * seasonMultiplierFor(scopeKey, awayId));
+    if(homeControlled) awardPoints((!awayWon ? winPts : losePts) * seasonMultiplierFor(scopeKey, homeId));
+  }
+}
+// One-time-award bookkeeping for milestone bonuses (division title, wild card, LCS, World Series,
+// make playoffs, make finals, championship) — bracket-refresh functions can rerun many times as a
+// bracket progresses, so every milestone needs its own idempotency guard keyed by team, tracked right
+// on the bracket object itself so it persists exactly like the rest of the bracket does. `isControlledFn`
+// is injected rather than hardcoded since season team identity (numeric index, checked against
+// SEASON.humanControlled) and tournament team identity (TEAM_POOL string key, checked against that
+// tournament's own sim-tracking record) have nothing in common structurally.
+function awardMilestoneOnce(bracket, key, teamId, amount, isControlledFn){
+  if(teamId==null || !amount) return;
+  if(!bracket.pointsAwarded) bracket.pointsAwarded = {};
+  if(!bracket.pointsAwarded[key]) bracket.pointsAwarded[key] = [];
+  if(bracket.pointsAwarded[key].includes(teamId)) return;
+  bracket.pointsAwarded[key].push(teamId);
+  const controlled = isControlledFn ? isControlledFn(teamId) : isMyControlledTeam(teamId);
+  if(controlled) awardPoints(amount);
+}
 // Championship popup, shown once per season the moment it concludes (see checkSeasonConcluded).
 // Reuses the same overlay styling as the confirm modal. Three sequential stages: (1) save a permanent
 // local record of the season — schedule, standings, and every stat line are already captured
@@ -6075,6 +6220,15 @@ function recordSeasonResult(idx, awayScore, homeScore){
   accumulateGameStats(GS, g.awayIdx, g.homeIdx, false);
   g.played=true; g.awayScore=awayScore; g.homeScore=homeScore;
   g.boxScore = buildBoxScoreSnapshot();
+  // Hidden points system — see the section above. Runs for every regular-season game in every scope
+  // (mlb / draft-local / draft-online) uniformly.
+  try{
+    const scopeKey = SEASON.statsScope || 'draft-local';
+    const awayControlled = isMyControlledTeam(g.awayIdx), homeControlled = isMyControlledTeam(g.homeIdx);
+    if(awayControlled) trackTeamSimStatus(g.awayIdx, !!GS.wasSimulated);
+    if(homeControlled) trackTeamSimStatus(g.homeIdx, !!GS.wasSimulated);
+    awardGamePoints(scopeKey, g.awayIdx, g.homeIdx, awayControlled, homeControlled, awayScore>homeScore, !!GS.wasSimulated, false);
+  } catch(e){ console.error('Points award failed (season game):', e); }
 }
 
 function renderSeasonSetup(){
@@ -6839,6 +6993,21 @@ function buildPlayoffBracket(){
   }
   const bracket = { format:'reseed', seeds, size, rounds:[{ bestOf:bestOf0, matches:round0Matches }], champion:null };
   refreshPlayoffs(bracket);
+  // Hidden points system — "Make Playoffs" only applies to Draft Season (local/online); MLB Season
+  // using this generic seeding (rather than the real division structure) has no equivalent line item
+  // in the point system, so it's simply not awarded here for that scope. Guarded at the SEASON level
+  // in case the bracket ever gets rebuilt.
+  try{
+    if(!SEASON.pointsMakePlayoffsAwarded){
+      SEASON.pointsMakePlayoffsAwarded = true;
+      const scopeKey = SEASON.statsScope || 'draft-local';
+      const table = POINT_TABLES[scopeKey];
+      if(table && table.makePlayoffs){
+        const gateOk = (idx)=> scopeKey==='draft-online' ? true : teamMeetsSimGate(idx);
+        seeds.forEach(idx=>{ if(gateOk(idx)) awardMilestoneOnce(bracket, 'makePlayoffs', idx, table.makePlayoffs); });
+      }
+    }
+  } catch(e){ console.error('Points award failed (make playoffs):', e); }
   return bracket;
 }
 // ---------------- "ACTUAL MLB PLAYOFFS" — the real, current (2022+) 12-team format ----------------
@@ -6877,6 +7046,19 @@ function buildActualMLBBracket(){
   });
   const bracket = { format:'actual-mlb', alSeeds, nlSeeds, rounds:[{ name:'Wild Card Series', bestOf:3, matches:wcMatches }], champion:null };
   refreshActualMLBBracket(bracket);
+  // Hidden points system — division winners are seeds 1-3 in each league, wild card teams are 4-6;
+  // this is already fully known the instant the bracket is seeded, no games need to be played first.
+  // Guarded at the SEASON level (not just the bracket object) in case the bracket ever gets rebuilt.
+  try{
+    if(!SEASON.pointsDivisionWildCardAwarded){
+      SEASON.pointsDivisionWildCardAwarded = true;
+      const table = POINT_TABLES.mlb;
+      [alSeeds, nlSeeds].forEach(seeds=>{
+        seeds.slice(0,3).forEach(idx=>{ if(teamMeetsSimGate(idx)) awardMilestoneOnce(bracket, 'divisionWin', idx, table.winDivision); });
+        seeds.slice(3,6).forEach(idx=>{ if(teamMeetsSimGate(idx)) awardMilestoneOnce(bracket, 'wildCard', idx, table.makeWildCard); });
+      });
+    }
+  } catch(e){ console.error('Points award failed (division/wild card):', e); }
   return bracket;
 }
 function refreshActualMLBBracket(bracket){
@@ -6956,6 +7138,14 @@ function recordPlayoffResult(roundIdx, matchIdx, homeIdx, awayIdx, homeScore, aw
   // mandatory-play call here: "no roster restrictions for playoffs."
   recordPitcherRestDebt(GS, awayIdx, homeIdx);
   accumulateGameStats(GS, awayIdx, homeIdx, true);
+  // Hidden points system — per-game playoff points, same rules as the regular season.
+  try{
+    const scopeKey = SEASON.statsScope || 'draft-local';
+    const awayControlled = isMyControlledTeam(awayIdx), homeControlled = isMyControlledTeam(homeIdx);
+    if(awayControlled) trackTeamSimStatus(awayIdx, !!GS.wasSimulated);
+    if(homeControlled) trackTeamSimStatus(homeIdx, !!GS.wasSimulated);
+    awardGamePoints(scopeKey, awayIdx, homeIdx, awayControlled, homeControlled, awayScore>homeScore, !!GS.wasSimulated, true);
+  } catch(e){ console.error('Points award failed (playoff game):', e); }
   m.games.push({homeIdx, awayIdx, homeScore, awayScore, boxScore: buildBoxScoreSnapshot()});
   if(homeIdx===m.aTeamIdx || awayIdx===m.aTeamIdx){
     const aIsHome = homeIdx===m.aTeamIdx;
@@ -6966,6 +7156,40 @@ function recordPlayoffResult(roundIdx, matchIdx, homeIdx, awayIdx, homeScore, aw
   else if(m.bWins>=needed) m.winnerTeamIdx = m.bTeamIdx;
   if(bracket.format==='actual-mlb') refreshActualMLBBracket(bracket);
   else refreshPlayoffs(bracket);
+  try{ awardPlayoffMilestonePoints(bracket); } catch(e){ console.error('Points award failed (playoff milestone):', e); }
+}
+// Hidden points system — milestone bonuses that depend on how far a controlled team advances in the
+// postseason. Safe to call after every single game (idempotent via awardMilestoneOnce), since bracket
+// refresh functions naturally get called that often anyway. "actual-mlb" format pays out winLCS/
+// winWorldSeries by round name; the generic "reseed" format (used by Draft Season, and MLB Season if
+// set up without the real division structure) instead pays out makeFinals/winChampionship, since it
+// has no concept of separate LCS/World Series rounds — just however many rounds the bracket has.
+function awardPlayoffMilestonePoints(bracket){
+  const scopeKey = SEASON.statsScope || 'draft-local';
+  const table = POINT_TABLES[scopeKey];
+  if(!table) return;
+  const gateOk = (idx)=> scopeKey==='draft-online' ? true : teamMeetsSimGate(idx); // online Draft Season: no sim-ratio restriction at all, per spec
+  if(bracket.format==='actual-mlb'){
+    if(scopeKey!=='mlb') return; // actual-mlb bracket format only ever appears under MLB Season
+    const cs = bracket.rounds[2]; // 'Championship Series' (ALCS/NLCS)
+    if(cs) cs.matches.forEach(match=>{
+      if(match.winnerTeamIdx!=null && gateOk(match.winnerTeamIdx)) awardMilestoneOnce(bracket, 'lcs', match.winnerTeamIdx, table.winLCS);
+    });
+    if(bracket.champion!=null && gateOk(bracket.champion)) awardMilestoneOnce(bracket, 'worldSeries', bracket.champion, table.winWorldSeries);
+  } else {
+    // Generic reseed bracket: "make finals" = appears in the last round's match; "win championship" = bracket.champion.
+    if(table.makeFinals){
+      const finalRound = bracket.rounds[bracket.rounds.length-1];
+      if(finalRound) finalRound.matches.forEach(match=>{
+        [match.aTeamIdx, match.bTeamIdx].forEach(idx=>{
+          if(idx!=null && gateOk(idx)) awardMilestoneOnce(bracket, 'makeFinals', idx, table.makeFinals);
+        });
+      });
+    }
+    if(table.winChampionship && bracket.champion!=null && gateOk(bracket.champion)){
+      awardMilestoneOnce(bracket, 'championship', bracket.champion, table.winChampionship);
+    }
+  }
 }
 // The next game to be played in an undecided series. "actual-mlb" brackets use each match's own
 // fixed homePattern (all-higher-seed for Wild Card, 2-2-1 for Division Series, 2-3-2 for Championship
@@ -7329,7 +7553,53 @@ function recordTourneyResult(ref, aScore, bScore){
   match.aScore = aScore; match.bScore = bScore;
   match.winner = aScore>bScore ? match.a : match.b;
   match.played = true;
+  // Hidden points system — per-game tournament points, then milestone bonuses (make finals / win
+  // tournament) once the bracket's been refreshed for this result. TOURNEY_MATCH_FLIPPED (set by
+  // whichever caller launched this specific game) tells us which logical bracket slot (a/b) actually
+  // played which physical side, so isHumanControls('away'/'home') maps back to the right team key.
+  try{
+    const flipped = typeof TOURNEY_MATCH_FLIPPED!=='undefined' && TOURNEY_MATCH_FLIPPED;
+    const aControlled = isMyControlledTourneyTeam(flipped ? 'home' : 'away');
+    const bControlled = isMyControlledTourneyTeam(flipped ? 'away' : 'home');
+    const wasSimmed = !!(GS && GS.wasSimulated);
+    if(aControlled) trackTourneyTeamSimStatus(match.a, wasSimmed);
+    if(bControlled) trackTourneyTeamSimStatus(match.b, wasSimmed);
+    awardGamePoints('tournament', match.a, match.b, aControlled, bControlled, aScore>bScore, wasSimmed, false);
+  } catch(e){ console.error('Points award failed (tournament game):', e); }
   refreshTournament(TOURNEY);
+  try{ awardTourneyMilestonePoints(TOURNEY); } catch(e){ console.error('Points award failed (tournament milestone):', e); }
+}
+function isMyControlledTourneyTeam(side){ return isHumanControls(side); }
+function trackTourneyTeamSimStatus(teamKey, wasSimulated){
+  if(!TOURNEY) return;
+  if(!TOURNEY.pointsSimTrack) TOURNEY.pointsSimTrack = {};
+  const rec = TOURNEY.pointsSimTrack[teamKey] || (TOURNEY.pointsSimTrack[teamKey] = {played:0, simulated:0});
+  rec.played += 1;
+  if(wasSimulated) rec.simulated += 1;
+}
+function tourneyTeamMeetsSimGate(teamKey){
+  const rec = TOURNEY && TOURNEY.pointsSimTrack && TOURNEY.pointsSimTrack[teamKey];
+  const ratio = (rec && rec.played) ? rec.simulated/rec.played : 0;
+  return ratio <= 0.5;
+}
+// Hidden points system — Make Finals / Win Tournament. Single elimination: finals is the last round
+// of the winners bracket. Double elimination: finals is the grand-final matchup specifically (a team
+// can go undefeated through the losers bracket and still not have "made the finals" until it gets
+// there). Safe to call after every game (idempotent via awardMilestoneOnce).
+function awardTourneyMilestonePoints(t){
+  const table = POINT_TABLES.tournament;
+  const isControlled = (key)=> !!(t.pointsSimTrack && t.pointsSimTrack[key]);
+  const gateOk = (key)=> tourneyTeamMeetsSimGate(key);
+  let finalists = [];
+  if(t.format==='double' && t.grandFinal){
+    const g1 = t.grandFinal.game1;
+    if(g1){ finalists = [g1.a, g1.b].filter(k=>k!=null); }
+  } else {
+    const finalRound = t.wb[t.wb.length-1];
+    if(finalRound && finalRound[0]){ finalists = [finalRound[0].a, finalRound[0].b].filter(k=>k!=null); }
+  }
+  finalists.forEach(key=>{ if(gateOk(key)) awardMilestoneOnce(t, 'makeFinals', key, table.makeFinals, isControlled); });
+  if(t.champion && gateOk(t.champion)) awardMilestoneOnce(t, 'winTournament', t.champion, table.winTournament, isControlled);
 }
 function startTourneyMatch(ref, match){
   const nameA = `${TEAM_POOL[match.a].city} ${TEAM_POOL[match.a].nick}`;
