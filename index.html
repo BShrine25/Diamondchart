@@ -179,6 +179,8 @@
   .fullcard-single-wrap{max-width:280px; margin:0 auto 12px; display:flex;}
 
   .fullcard{flex:1; min-width:0; background:var(--card); border:1px solid var(--line); border-radius:14px; overflow:hidden; box-shadow:0 1px 3px rgba(20,20,10,.06); position:relative; display:flex; flex-direction:column;}
+  .real-card-wrap{ padding:0; display:block; }
+  .real-card-img{ width:100%; height:auto; display:block; border-radius:14px; }
   .cardv3-main{flex:1; min-width:0; display:flex; flex-direction:column;}
   .cardv3-header{background:linear-gradient(135deg, var(--heroColor,#333) 0%, #0a0a0c 150%); clip-path:polygon(0 0, 100% 0, 100% 76%, 0 100%); padding:7px 8px 16px; color:#fff;}
   .fullcard-light-hero .cardv3-header{color:var(--chalk);}
@@ -1056,7 +1058,7 @@ function distributeToTwenty(weights){
 // Physical-card convention: outs occupy the low rolls, then BB, then hits ascending
 // in quality, with HR at the very top. Order (not just count) matters here.
 const BATTER_CHART_ORDER = ['SO','GB','FB','BB','1B','2B','3B','HR'];
-const PITCHER_CHART_ORDER = ['SO','GB','LD','FB','BB','1B','2B','HR'];
+const PITCHER_CHART_ORDER = ['LD','SO','GB','FB','BB','1B','2B','HR']; // LD listed first (folds in PU from the real card — a no-advancement automatic out, same as LD) — SO/GB/FB/etc. follow in their original order
 // CHART_CAPACITY is the array length we build charts to — deliberately bigger
 // than the current 24-sided Power Die max so future mechanics (strategy cards,
 // etc.) that push the effective roll higher than 24 already have real data to
@@ -1134,6 +1136,911 @@ function distributeInt(weights, total){
 }
 
 // s: {AB,H,d2,d3,HR,BB,SO,SB}
+// Real-card photos, referenced by file path only — never embedded in this file. Every current
+// player already has an entry here (auto-generated from their name); uploading a matching image to
+// the "cards/" folder next to this file is the ONLY step needed to make that player's card show the
+// real photo instead of the house template — no code changes required, ever, for existing players.
+// Naming convention: lowercase, spaces to hyphens, periods and apostrophes stripped
+// (e.g. "Ryan O'Hearn" -> cards/ryan-ohearn.jpg, "A.J. Minter" -> cards/aj-minter.jpg).
+const PLAYER_IMAGES = {
+  "A.J. Ewing":"cards/aj-ewing.jpg",
+  "A.J. Minter":"cards/aj-minter.jpg",
+  "AJ Blubaugh":"cards/aj-blubaugh.jpg",
+  "Aaron Ashby":"cards/aaron-ashby.jpg",
+  "Aaron Civale":"cards/aaron-civale.jpg",
+  "Aaron Judge":"cards/aaron-judge.jpg",
+  "Aaron Nola":"cards/aaron-nola.jpg",
+  "Abimelec Ortiz":"cards/abimelec-ortiz.jpg",
+  "Abner Uribe":"cards/abner-uribe.jpg",
+  "Adam Frazier":"cards/adam-frazier.jpg",
+  "Adam Macko":"cards/adam-macko.jpg",
+  "Adley Rutschman":"cards/adley-rutschman.jpg",
+  "Adolis Garcia":"cards/adolis-garcia.jpg",
+  "Adrian Del Castillo":"cards/adrian-del-castillo.jpg",
+  "Adrian Houser":"cards/adrian-houser.jpg",
+  "Adrian Morejon":"cards/adrian-morejon.jpg",
+  "Agustin Ramirez":"cards/agustin-ramirez.jpg",
+  "Alec Bohm":"cards/alec-bohm.jpg",
+  "Alec Burleson":"cards/alec-burleson.jpg",
+  "Alec Gamboa":"cards/alec-gamboa.jpg",
+  "Alejandro Kirk":"cards/alejandro-kirk.jpg",
+  "Alejandro Osuna":"cards/alejandro-osuna.jpg",
+  "Alek Thomas":"cards/alek-thomas.jpg",
+  "Alex Bregman":"cards/alex-bregman.jpg",
+  "Alex Call":"cards/alex-call.jpg",
+  "Alex Freeland":"cards/alex-freeland.jpg",
+  "Alex Hoppe":"cards/alex-hoppe.jpg",
+  "Alex Lange":"cards/alex-lange.jpg",
+  "Alex Vesia":"cards/alex-vesia.jpg",
+  "Ali Sanchez":"cards/ali-sanchez.jpg",
+  "Alika Williams":"cards/alika-williams.jpg",
+  "Amed Rosario":"cards/amed-rosario.jpg",
+  "Andre Pallante":"cards/andre-pallante.jpg",
+  "Andres Chaparro":"cards/andres-chaparro.jpg",
+  "Andres Gimenez":"cards/andres-gimenez.jpg",
+  "Andres Munoz":"cards/andres-munoz.jpg",
+  "Andrew Abbott":"cards/andrew-abbott.jpg",
+  "Andrew Alvarez":"cards/andrew-alvarez.jpg",
+  "Andrew Benintendi":"cards/andrew-benintendi.jpg",
+  "Andrew Kittredge":"cards/andrew-kittredge.jpg",
+  "Andrew Morris":"cards/andrew-morris.jpg",
+  "Andrew Nardi":"cards/andrew-nardi.jpg",
+  "Andrew Painter":"cards/andrew-painter.jpg",
+  "Andrew Vaughn":"cards/andrew-vaughn.jpg",
+  "Andruw Monasterio":"cards/andruw-monasterio.jpg",
+  "Andy Pages":"cards/andy-pages.jpg",
+  "Angel Chivilli":"cards/angel-chivilli.jpg",
+  "Angel Martinez":"cards/angel-martinez.jpg",
+  "Anthony Banda":"cards/anthony-banda.jpg",
+  "Anthony Bender":"cards/anthony-bender.jpg",
+  "Anthony Kay":"cards/anthony-kay.jpg",
+  "Anthony Nunez":"cards/anthony-nunez.jpg",
+  "Anthony Seigler":"cards/anthony-seigler.jpg",
+  "Anthony Volpe":"cards/anthony-volpe.jpg",
+  "Antonio Senzatela":"cards/antonio-senzatela.jpg",
+  "Aroldis Chapman":"cards/aroldis-chapman.jpg",
+  "Austin Hedges":"cards/austin-hedges.jpg",
+  "Austin Martin":"cards/austin-martin.jpg",
+  "Austin Riley":"cards/austin-riley.jpg",
+  "Austin Warren":"cards/austin-warren.jpg",
+  "Austin Wells":"cards/austin-wells.jpg",
+  "Bailey Ober":"cards/bailey-ober.jpg",
+  "Beck Way":"cards/beck-way.jpg",
+  "Ben Brown":"cards/ben-brown.jpg",
+  "Ben Rice":"cards/ben-rice.jpg",
+  "Ben Williamson":"cards/ben-williamson.jpg",
+  "Bennett Sousa":"cards/bennett-sousa.jpg",
+  "Billy Cook":"cards/billy-cook.jpg",
+  "Blade Tidwell":"cards/blade-tidwell.jpg",
+  "Blake Dunn":"cards/blake-dunn.jpg",
+  "Blake Treinen":"cards/blake-treinen.jpg",
+  "Blas Castano":"cards/blas-castano.jpg",
+  "Blaze Alexander":"cards/blaze-alexander.jpg",
+  "Blaze Jordan":"cards/blaze-jordan.jpg",
+  "Bo Bichette":"cards/bo-bichette.jpg",
+  "Bobby Witt Jr.":"cards/bobby-witt-jr.jpg",
+  "Brad Keller":"cards/brad-keller.jpg",
+  "Brad Lord":"cards/brad-lord.jpg",
+  "Braden Montgomery":"cards/braden-montgomery.jpg",
+  "Bradgley Rodriguez":"cards/bradgley-rodriguez.jpg",
+  "Brady Basso":"cards/brady-basso.jpg",
+  "Brady House":"cards/brady-house.jpg",
+  "Brady Singer":"cards/brady-singer.jpg",
+  "Brandon Lockridge":"cards/brandon-lockridge.jpg",
+  "Brandon Lowe":"cards/brandon-lowe.jpg",
+  "Brandon Marsh":"cards/brandon-marsh.jpg",
+  "Brandon Nimmo":"cards/brandon-nimmo.jpg",
+  "Brandon Pfaadt":"cards/brandon-pfaadt.jpg",
+  "Brandon Valenzuela":"cards/brandon-valenzuela.jpg",
+  "Brandon Williamson":"cards/brandon-williamson.jpg",
+  "Brandon Woodruff":"cards/brandon-woodruff.jpg",
+  "Brandon Young":"cards/brandon-young.jpg",
+  "Brandyn Garcia":"cards/brandyn-garcia.jpg",
+  "Brant Hurter":"cards/brant-hurter.jpg",
+  "Braxton Ashcraft":"cards/braxton-ashcraft.jpg",
+  "Brayan Bello":"cards/brayan-bello.jpg",
+  "Brayan Rocchio":"cards/brayan-rocchio.jpg",
+  "Braydon Fisher":"cards/braydon-fisher.jpg",
+  "Brenan Hanifee":"cards/brenan-hanifee.jpg",
+  "Brendan Donovan":"cards/brendan-donovan.jpg",
+  "Brendon Little":"cards/brendon-little.jpg",
+  "Brennan Bernardino":"cards/brennan-bernardino.jpg",
+  "Brent Headrick":"cards/brent-headrick.jpg",
+  "Brent Rooker":"cards/brent-rooker.jpg",
+  "Brent Suter":"cards/brent-suter.jpg",
+  "Brenton Doyle":"cards/brenton-doyle.jpg",
+  "Brett Baty":"cards/brett-baty.jpg",
+  "Brett Sullivan":"cards/brett-sullivan.jpg",
+  "Brice Matthews":"cards/brice-matthews.jpg",
+  "Brice Turang":"cards/brice-turang.jpg",
+  "Brock Burke":"cards/brock-burke.jpg",
+  "Brock Stewart":"cards/brock-stewart.jpg",
+  "Brooks Lee":"cards/brooks-lee.jpg",
+  "Brooks Raley":"cards/brooks-raley.jpg",
+  "Bryan Abreu":"cards/bryan-abreu.jpg",
+  "Bryan Baker":"cards/bryan-baker.jpg",
+  "Bryan Hudson":"cards/bryan-hudson.jpg",
+  "Bryan King":"cards/bryan-king.jpg",
+  "Bryan Reynolds":"cards/bryan-reynolds.jpg",
+  "Bryan Torres":"cards/bryan-torres.jpg",
+  "Bryan Woo":"cards/bryan-woo.jpg",
+  "Bryce Elder":"cards/bryce-elder.jpg",
+  "Bryce Eldridge":"cards/bryce-eldridge.jpg",
+  "Bryce Harper":"cards/bryce-harper.jpg",
+  "Bryce Miller":"cards/bryce-miller.jpg",
+  "Bryse Wilson":"cards/bryse-wilson.jpg",
+  "Bryson Stott":"cards/bryson-stott.jpg",
+  "Bubba Chandler":"cards/bubba-chandler.jpg",
+  "Burch Smith":"cards/burch-smith.jpg",
+  "Byron Buxton":"cards/byron-buxton.jpg",
+  "CJ Abrams":"cards/cj-abrams.jpg",
+  "Cade Cavalli":"cards/cade-cavalli.jpg",
+  "Cade Gibson":"cards/cade-gibson.jpg",
+  "Cade Povich":"cards/cade-povich.jpg",
+  "Cade Smith":"cards/cade-smith.jpg",
+  "Cal Quantrill":"cards/cal-quantrill.jpg",
+  "Cal Raleigh":"cards/cal-raleigh.jpg",
+  "Caleb Durbin":"cards/caleb-durbin.jpg",
+  "Caleb Ferguson":"cards/caleb-ferguson.jpg",
+  "Caleb Kilian":"cards/caleb-kilian.jpg",
+  "Caleb Thielbar":"cards/caleb-thielbar.jpg",
+  "Calvin Faucher":"cards/calvin-faucher.jpg",
+  "Cam Booser":"cards/cam-booser.jpg",
+  "Cam Sanders":"cards/cam-sanders.jpg",
+  "Cam Schlittler":"cards/cam-schlittler.jpg",
+  "Cam Smith":"cards/cam-smith.jpg",
+  "Camilo Doval":"cards/camilo-doval.jpg",
+  "Carlos Correa":"cards/carlos-correa.jpg",
+  "Carlos Cortes":"cards/carlos-cortes.jpg",
+  "Carlos Narvaez":"cards/carlos-narvaez.jpg",
+  "Carlos Rodon":"cards/carlos-rodon.jpg",
+  "Carmen Mlodzinski":"cards/carmen-mlodzinski.jpg",
+  "Carson Benge":"cards/carson-benge.jpg",
+  "Carson Kelly":"cards/carson-kelly.jpg",
+  "Carson Palmquist":"cards/carson-palmquist.jpg",
+  "Carson Whisenhunt":"cards/carson-whisenhunt.jpg",
+  "Carter Jensen":"cards/carter-jensen.jpg",
+  "Casey Legumina":"cards/casey-legumina.jpg",
+  "Casey Mize":"cards/casey-mize.jpg",
+  "Casey Schmitt":"cards/casey-schmitt.jpg",
+  "Ceddanne Rafaela":"cards/ceddanne-rafaela.jpg",
+  "Cedric Mullins":"cards/cedric-mullins.jpg",
+  "Chad Patrick":"cards/chad-patrick.jpg",
+  "Chandler Simpson":"cards/chandler-simpson.jpg",
+  "Chase Burns":"cards/chase-burns.jpg",
+  "Chase DeLauter":"cards/chase-delauter.jpg",
+  "Chase Dollander":"cards/chase-dollander.jpg",
+  "Chase Meidroth":"cards/chase-meidroth.jpg",
+  "Chase Petty":"cards/chase-petty.jpg",
+  "Chase Shugart":"cards/chase-shugart.jpg",
+  "Chase Silseth":"cards/chase-silseth.jpg",
+  "Chris Bassitt":"cards/chris-bassitt.jpg",
+  "Chris Murphy":"cards/chris-murphy.jpg",
+  "Chris Roycroft":"cards/chris-roycroft.jpg",
+  "Chris Sale":"cards/chris-sale.jpg",
+  "Christian Encarnacion-Strand":"cards/christian-encarnacion-strand.jpg",
+  "Christian Koss":"cards/christian-koss.jpg",
+  "Christian Scott":"cards/christian-scott.jpg",
+  "Christian Vazquez":"cards/christian-vazquez.jpg",
+  "Christian Walker":"cards/christian-walker.jpg",
+  "Christian Yelich":"cards/christian-yelich.jpg",
+  "Cionel Perez":"cards/cionel-perez.jpg",
+  "Clay Holmes":"cards/clay-holmes.jpg",
+  "Clayton Beeter":"cards/clayton-beeter.jpg",
+  "Coby Mayo":"cards/coby-mayo.jpg",
+  "Cody Bellinger":"cards/cody-bellinger.jpg",
+  "Cole Carrigg":"cards/cole-carrigg.jpg",
+  "Cole Ragans":"cards/cole-ragans.jpg",
+  "Cole Sulser":"cards/cole-sulser.jpg",
+  "Cole Wilcox":"cards/cole-wilcox.jpg",
+  "Cole Winn":"cards/cole-winn.jpg",
+  "Cole Young":"cards/cole-young.jpg",
+  "Colin Holderman":"cards/colin-holderman.jpg",
+  "Colin Rea":"cards/colin-rea.jpg",
+  "Colson Montgomery":"cards/colson-montgomery.jpg",
+  "Colt Emerson":"cards/colt-emerson.jpg",
+  "Colt Keith":"cards/colt-keith.jpg",
+  "Colton Cowser":"cards/colton-cowser.jpg",
+  "Connelly Early":"cards/connelly-early.jpg",
+  "Connor Norby":"cards/connor-norby.jpg",
+  "Connor Phillips":"cards/connor-phillips.jpg",
+  "Connor Prielipp":"cards/connor-prielipp.jpg",
+  "Connor Seabold":"cards/connor-seabold.jpg",
+  "Connor Wong":"cards/connor-wong.jpg",
+  "Cooper Criswell":"cards/cooper-criswell.jpg",
+  "Cooper Pratt":"cards/cooper-pratt.jpg",
+  "Corbin Carroll":"cards/corbin-carroll.jpg",
+  "Corey Seager":"cards/corey-seager.jpg",
+  "Craig Kimbrel":"cards/craig-kimbrel.jpg",
+  "Craig Yoho":"cards/craig-yoho.jpg",
+  "Cristian Javier":"cards/cristian-javier.jpg",
+  "Cristopher Sanchez":"cards/cristopher-sanchez.jpg",
+  "Curtis Mead":"cards/curtis-mead.jpg",
+  "DL Hall":"cards/dl-hall.jpg",
+  "Dalton Rushing":"cards/dalton-rushing.jpg",
+  "Dane Myers":"cards/dane-myers.jpg",
+  "Daniel Duarte":"cards/daniel-duarte.jpg",
+  "Daniel Lynch IV":"cards/daniel-lynch-iv.jpg",
+  "Daniel Palencia":"cards/daniel-palencia.jpg",
+  "Daniel Schneemann":"cards/daniel-schneemann.jpg",
+  "Daniel Susac":"cards/daniel-susac.jpg",
+  "Danny Jansen":"cards/danny-jansen.jpg",
+  "Dansby Swanson":"cards/dansby-swanson.jpg",
+  "Darell Hernaiz":"cards/darell-hernaiz.jpg",
+  "David Bednar":"cards/david-bednar.jpg",
+  "David Fry":"cards/david-fry.jpg",
+  "David Hamilton":"cards/david-hamilton.jpg",
+  "David Morgan":"cards/david-morgan.jpg",
+  "David Peterson":"cards/david-peterson.jpg",
+  "David Sandlin":"cards/david-sandlin.jpg",
+  "Davis Martin":"cards/davis-martin.jpg",
+  "Davis Schneider":"cards/davis-schneider.jpg",
+  "Daylen Lile":"cards/daylen-lile.jpg",
+  "Dean Kremer":"cards/dean-kremer.jpg",
+  "Denzer Guzman":"cards/denzer-guzman.jpg",
+  "Derek Hill":"cards/derek-hill.jpg",
+  "Devin Williams":"cards/devin-williams.jpg",
+  "Didier Fuentes":"cards/didier-fuentes.jpg",
+  "Dillon Dingler":"cards/dillon-dingler.jpg",
+  "Dominic Canzone":"cards/dominic-canzone.jpg",
+  "Dominic Smith":"cards/dominic-smith.jpg",
+  "Donovan Walton":"cards/donovan-walton.jpg",
+  "Drake Baldwin":"cards/drake-baldwin.jpg",
+  "Drew Anderson":"cards/drew-anderson.jpg",
+  "Drew Cavanaugh":"cards/drew-cavanaugh.jpg",
+  "Drew Gilbert":"cards/drew-gilbert.jpg",
+  "Drew Millas":"cards/drew-millas.jpg",
+  "Drew Rasmussen":"cards/drew-rasmussen.jpg",
+  "Drew Romo":"cards/drew-romo.jpg",
+  "Drew Sommers":"cards/drew-sommers.jpg",
+  "Drey Jameson":"cards/drey-jameson.jpg",
+  "Dustin May":"cards/dustin-may.jpg",
+  "Dylan Beavers":"cards/dylan-beavers.jpg",
+  "Dylan Cease":"cards/dylan-cease.jpg",
+  "Dylan Crews":"cards/dylan-crews.jpg",
+  "Dylan Dodd":"cards/dylan-dodd.jpg",
+  "Dylan Lee":"cards/dylan-lee.jpg",
+  "Dylan Smith":"cards/dylan-smith.jpg",
+  "Edgar Quero":"cards/edgar-quero.jpg",
+  "Edgardo Henriquez":"cards/edgardo-henriquez.jpg",
+  "Edmundo Sosa":"cards/edmundo-sosa.jpg",
+  "Eduard Bazardo":"cards/eduard-bazardo.jpg",
+  "Eduardo Rodriguez":"cards/eduardo-rodriguez.jpg",
+  "Edward Cabrera":"cards/edward-cabrera.jpg",
+  "Edwin Arroyo":"cards/edwin-arroyo.jpg",
+  "Eli White":"cards/eli-white.jpg",
+  "Elias Diaz":"cards/elias-diaz.jpg",
+  "Elly De La Cruz":"cards/elly-de-la-cruz.jpg",
+  "Elvis Alvarado":"cards/elvis-alvarado.jpg",
+  "Emerson Hancock":"cards/emerson-hancock.jpg",
+  "Emilio Pagan":"cards/emilio-pagan.jpg",
+  "Emmet Sheehan":"cards/emmet-sheehan.jpg",
+  "Endy Rodriguez":"cards/endy-rodriguez.jpg",
+  "Enmanuel De Jesus":"cards/enmanuel-de-jesus.jpg",
+  "Enyel De Los Santos":"cards/enyel-de-los-santos.jpg",
+  "Eric Lauer":"cards/eric-lauer.jpg",
+  "Eric Orze":"cards/eric-orze.jpg",
+  "Erick Fedde":"cards/erick-fedde.jpg",
+  "Erik Miller":"cards/erik-miller.jpg",
+  "Erik Sabrowski":"cards/erik-sabrowski.jpg",
+  "Ernie Clement":"cards/ernie-clement.jpg",
+  "Esmerlyn Valdez":"cards/esmerlyn-valdez.jpg",
+  "Esteury Ruiz":"cards/esteury-ruiz.jpg",
+  "Ethan Roberts":"cards/ethan-roberts.jpg",
+  "Eugenio Suarez":"cards/eugenio-suarez.jpg",
+  "Eury Perez":"cards/eury-perez.jpg",
+  "Evan Carter":"cards/evan-carter.jpg",
+  "Evan Sisk":"cards/evan-sisk.jpg",
+  "Ezequiel Duran":"cards/ezequiel-duran.jpg",
+  "Ezequiel Tovar":"cards/ezequiel-tovar.jpg",
+  "Fernando Cruz":"cards/fernando-cruz.jpg",
+  "Fernando Tatis Jr.":"cards/fernando-tatis-jr.jpg",
+  "Foster Griffin":"cards/foster-griffin.jpg",
+  "Framber Valdez":"cards/framber-valdez.jpg",
+  "Francisco Alvarez":"cards/francisco-alvarez.jpg",
+  "Francisco Lindor":"cards/francisco-lindor.jpg",
+  "Freddie Freeman":"cards/freddie-freeman.jpg",
+  "Freddy Fermin":"cards/freddy-fermin.jpg",
+  "Freddy Peralta":"cards/freddy-peralta.jpg",
+  "Gabe Speier":"cards/gabe-speier.jpg",
+  "Gabriel Arias":"cards/gabriel-arias.jpg",
+  "Gabriel Moreno":"cards/gabriel-moreno.jpg",
+  "Gage Jump":"cards/gage-jump.jpg",
+  "Garrett Cleavinger":"cards/garrett-cleavinger.jpg",
+  "Garrett Mitchell":"cards/garrett-mitchell.jpg",
+  "Garrett Whitlock":"cards/garrett-whitlock.jpg",
+  "Gary Sanchez":"cards/gary-sanchez.jpg",
+  "Gavin Collyer":"cards/gavin-collyer.jpg",
+  "Gavin Sheets":"cards/gavin-sheets.jpg",
+  "Gavin Williams":"cards/gavin-williams.jpg",
+  "George Kirby":"cards/george-kirby.jpg",
+  "George Soriano":"cards/george-soriano.jpg",
+  "George Springer":"cards/george-springer.jpg",
+  "Geraldo Perdomo":"cards/geraldo-perdomo.jpg",
+  "Gerrit Cole":"cards/gerrit-cole.jpg",
+  "Giancarlo Stanton":"cards/giancarlo-stanton.jpg",
+  "Gleyber Torres":"cards/gleyber-torres.jpg",
+  "Gordon Graceffo":"cards/gordon-graceffo.jpg",
+  "Graham Ashcraft":"cards/graham-ashcraft.jpg",
+  "Graham Pauley":"cards/graham-pauley.jpg",
+  "Grant Anderson":"cards/grant-anderson.jpg",
+  "Grant Holmes":"cards/grant-holmes.jpg",
+  "Grant Taylor":"cards/grant-taylor.jpg",
+  "Grant Wolfram":"cards/grant-wolfram.jpg",
+  "Grayson Rodriguez":"cards/grayson-rodriguez.jpg",
+  "Greg Weissert":"cards/greg-weissert.jpg",
+  "Gregory Soto":"cards/gregory-soto.jpg",
+  "Griffin Canning":"cards/griffin-canning.jpg",
+  "Griffin Conine":"cards/griffin-conine.jpg",
+  "Griffin Jax":"cards/griffin-jax.jpg",
+  "Gunnar Henderson":"cards/gunnar-henderson.jpg",
+  "Gus Varland":"cards/gus-varland.jpg",
+  "Ha-Seong Kim":"cards/ha-seong-kim.jpg",
+  "Hao-Yu Lee":"cards/hao-yu-lee.jpg",
+  "Harrison Bader":"cards/harrison-bader.jpg",
+  "Hayden Juenger":"cards/hayden-juenger.jpg",
+  "Hayden Wesneski":"cards/hayden-wesneski.jpg",
+  "Heliot Ramos":"cards/heliot-ramos.jpg",
+  "Henry Bolte":"cards/henry-bolte.jpg",
+  "Henry Davis":"cards/henry-davis.jpg",
+  "Heriberto Hernandez":"cards/heriberto-hernandez.jpg",
+  "Hoby Milner":"cards/hoby-milner.jpg",
+  "Hogan Harris":"cards/hogan-harris.jpg",
+  "Huascar Brazoban":"cards/huascar-brazoban.jpg",
+  "Hunter Bigge":"cards/hunter-bigge.jpg",
+  "Hunter Brown":"cards/hunter-brown.jpg",
+  "Hunter Dobbins":"cards/hunter-dobbins.jpg",
+  "Hunter Feduccia":"cards/hunter-feduccia.jpg",
+  "Hunter Gaddis":"cards/hunter-gaddis.jpg",
+  "Hunter Goodman":"cards/hunter-goodman.jpg",
+  "Hunter Greene":"cards/hunter-greene.jpg",
+  "Hyeseong Kim":"cards/hyeseong-kim.jpg",
+  "Ian Happ":"cards/ian-happ.jpg",
+  "Ian Seymour":"cards/ian-seymour.jpg",
+  "Ildemaro Vargas":"cards/ildemaro-vargas.jpg",
+  "Isaac Collins":"cards/isaac-collins.jpg",
+  "Isaac Paredes":"cards/isaac-paredes.jpg",
+  "Isiah Kiner-Falefa":"cards/isiah-kiner-falefa.jpg",
+  "Ivan Herrera":"cards/ivan-herrera.jpg",
+  "J.P. Crawford":"cards/jp-crawford.jpg",
+  "J.T. Ginn":"cards/jt-ginn.jpg",
+  "J.T. Realmuto":"cards/jt-realmuto.jpg",
+  "JJ Bleday":"cards/jj-bleday.jpg",
+  "JJ Wetherholt":"cards/jj-wetherholt.jpg",
+  "JP Sears":"cards/jp-sears.jpg",
+  "JR Ritchie":"cards/jr-ritchie.jpg",
+  "JT Brubaker":"cards/jt-brubaker.jpg",
+  "Jac Caglianone":"cards/jac-caglianone.jpg",
+  "Jack Dreyer":"cards/jack-dreyer.jpg",
+  "Jack Flaherty":"cards/jack-flaherty.jpg",
+  "Jack Kochanowicz":"cards/jack-kochanowicz.jpg",
+  "Jack Leiter":"cards/jack-leiter.jpg",
+  "Jack Perkins":"cards/jack-perkins.jpg",
+  "Jackson Chourio":"cards/jackson-chourio.jpg",
+  "Jackson Holliday":"cards/jackson-holliday.jpg",
+  "Jackson Merrill":"cards/jackson-merrill.jpg",
+  "Jacob Gonzalez":"cards/jacob-gonzalez.jpg",
+  "Jacob Latz":"cards/jacob-latz.jpg",
+  "Jacob Lopez":"cards/jacob-lopez.jpg",
+  "Jacob Misiorowski":"cards/jacob-misiorowski.jpg",
+  "Jacob Waguespack":"cards/jacob-waguespack.jpg",
+  "Jacob Webb":"cards/jacob-webb.jpg",
+  "Jacob Wilson":"cards/jacob-wilson.jpg",
+  "Jacob Young":"cards/jacob-young.jpg",
+  "Jacob deGrom":"cards/jacob-degrom.jpg",
+  "Jaden Hill":"cards/jaden-hill.jpg",
+  "Jahmai Jones":"cards/jahmai-jones.jpg",
+  "Jake Bauers":"cards/jake-bauers.jpg",
+  "Jake Bennett":"cards/jake-bennett.jpg",
+  "Jake Bird":"cards/jake-bird.jpg",
+  "Jake Burger":"cards/jake-burger.jpg",
+  "Jake Irvin":"cards/jake-irvin.jpg",
+  "Jake Mangum":"cards/jake-mangum.jpg",
+  "Jake McCarthy":"cards/jake-mccarthy.jpg",
+  "Jake Meyers":"cards/jake-meyers.jpg",
+  "Jake Rogers":"cards/jake-rogers.jpg",
+  "Jakob Junis":"cards/jakob-junis.jpg",
+  "Jakob Marsee":"cards/jakob-marsee.jpg",
+  "Jalen Beeks":"cards/jalen-beeks.jpg",
+  "James McCann":"cards/james-mccann.jpg",
+  "James Outman":"cards/james-outman.jpg",
+  "James Wood":"cards/james-wood.jpg",
+  "Jameson Taillon":"cards/jameson-taillon.jpg",
+  "Janson Junk":"cards/janson-junk.jpg",
+  "Jared Jones":"cards/jared-jones.jpg",
+  "Jared Triolo":"cards/jared-triolo.jpg",
+  "Jared Young":"cards/jared-young.jpg",
+  "Jarren Duran":"cards/jarren-duran.jpg",
+  "Jason Adam":"cards/jason-adam.jpg",
+  "Jasson Dominguez":"cards/jasson-dominguez.jpg",
+  "Javier Assad":"cards/javier-assad.jpg",
+  "Javier Baez":"cards/javier-baez.jpg",
+  "Javier Sanoja":"cards/javier-sanoja.jpg",
+  "Jayden Murray":"cards/jayden-murray.jpg",
+  "Jazz Chisholm Jr.":"cards/jazz-chisholm-jr.jpg",
+  "Jeff Hoffman":"cards/jeff-hoffman.jpg",
+  "Jeff McNeil":"cards/jeff-mcneil.jpg",
+  "Jeffrey Springs":"cards/jeffrey-springs.jpg",
+  "Jeremiah Estrada":"cards/jeremiah-estrada.jpg",
+  "Jeremiah Jackson":"cards/jeremiah-jackson.jpg",
+  "Jeremy Pena":"cards/jeremy-pena.jpg",
+  "Jesse Scholtens":"cards/jesse-scholtens.jpg",
+  "Jesus Luzardo":"cards/jesus-luzardo.jpg",
+  "Jesus Sanchez":"cards/jesus-sanchez.jpg",
+  "Jhoan Duran":"cards/jhoan-duran.jpg",
+  "Jim Jarvis":"cards/jim-jarvis.jpg",
+  "Jimmy Crooks":"cards/jimmy-crooks.jpg",
+  "Jimmy Herget":"cards/jimmy-herget.jpg",
+  "Jo Adell":"cards/jo-adell.jpg",
+  "Joc Pederson":"cards/joc-pederson.jpg",
+  "Joe Mack":"cards/joe-mack.jpg",
+  "Joe Mantiply":"cards/joe-mantiply.jpg",
+  "Joel Kuhnel":"cards/joel-kuhnel.jpg",
+  "Joey Bart":"cards/joey-bart.jpg",
+  "Joey Cantillo":"cards/joey-cantillo.jpg",
+  "Joey Loperfido":"cards/joey-loperfido.jpg",
+  "Joey Ortiz":"cards/joey-ortiz.jpg",
+  "John King":"cards/john-king.jpg",
+  "John Rave":"cards/john-rave.jpg",
+  "John Schreiber":"cards/john-schreiber.jpg",
+  "Jojo Romero":"cards/jojo-romero.jpg",
+  "Jonah Heim":"cards/jonah-heim.jpg",
+  "Jonathan Aranda":"cards/jonathan-aranda.jpg",
+  "Jonathan Bowlan":"cards/jonathan-bowlan.jpg",
+  "Jonathan Hernandez":"cards/jonathan-hernandez.jpg",
+  "Jonathan Loaisiga":"cards/jonathan-loaisiga.jpg",
+  "Jonathan Pintaro":"cards/jonathan-pintaro.jpg",
+  "Jonny DeLuca":"cards/jonny-deluca.jpg",
+  "Jorbit Vivas":"cards/jorbit-vivas.jpg",
+  "Jordan Beck":"cards/jordan-beck.jpg",
+  "Jordan Hicks":"cards/jordan-hicks.jpg",
+  "Jordan Leasure":"cards/jordan-leasure.jpg",
+  "Jordan Romano":"cards/jordan-romano.jpg",
+  "Jordan Walker":"cards/jordan-walker.jpg",
+  "Jorge Barrosa":"cards/jorge-barrosa.jpg",
+  "Jorge Mateo":"cards/jorge-mateo.jpg",
+  "Jorge Polanco":"cards/jorge-polanco.jpg",
+  "Jose A. Ferrer":"cards/jose-a-ferrer.jpg",
+  "Jose Altuve":"cards/jose-altuve.jpg",
+  "Jose Alvarado":"cards/jose-alvarado.jpg",
+  "Jose Caballero":"cards/jose-caballero.jpg",
+  "Jose Fermin":"cards/jose-fermin.jpg",
+  "Jose Fernandez":"cards/jose-fernandez.jpg",
+  "Jose Franco":"cards/jose-franco.jpg",
+  "Jose Quintana":"cards/jose-quintana.jpg",
+  "Jose Ramirez":"cards/jose-ramirez.jpg",
+  "Jose Siri":"cards/jose-siri.jpg",
+  "Jose Soriano":"cards/jose-soriano.jpg",
+  "Jose Suarez":"cards/jose-suarez.jpg",
+  "Jose Tena":"cards/jose-tena.jpg",
+  "Jose Trevino":"cards/jose-trevino.jpg",
+  "Jose Urquidy":"cards/jose-urquidy.jpg",
+  "Josh Bell":"cards/josh-bell.jpg",
+  "Josh Hader":"cards/josh-hader.jpg",
+  "Josh Jung":"cards/josh-jung.jpg",
+  "Josh Lowe":"cards/josh-lowe.jpg",
+  "Josh Naylor":"cards/josh-naylor.jpg",
+  "Josh Smith":"cards/josh-smith.jpg",
+  "Josh Walker":"cards/josh-walker.jpg",
+  "Jovani Moran":"cards/jovani-moran.jpg",
+  "Juan Mejia":"cards/juan-mejia.jpg",
+  "Juan Morillo":"cards/juan-morillo.jpg",
+  "Juan Soto":"cards/juan-soto.jpg",
+  "Julian Garcia":"cards/julian-garcia.jpg",
+  "Julio Rodriguez":"cards/julio-rodriguez.jpg",
+  "Jung Hoo Lee":"cards/jung-hoo-lee.jpg",
+  "Junior Caminero":"cards/junior-caminero.jpg",
+  "Justin Bruihl":"cards/justin-bruihl.jpg",
+  "Justin Crawford":"cards/justin-crawford.jpg",
+  "Justin Foscue":"cards/justin-foscue.jpg",
+  "Justin Slaten":"cards/justin-slaten.jpg",
+  "Justin Sterner":"cards/justin-sterner.jpg",
+  "Justin Wrobleski":"cards/justin-wrobleski.jpg",
+  "Kai-Wei Teng":"cards/kai-wei-teng.jpg",
+  "Kazuma Okamoto":"cards/kazuma-okamoto.jpg",
+  "Ke'Bryan Hayes":"cards/kebryan-hayes.jpg",
+  "Keaton Winn":"cards/keaton-winn.jpg",
+  "Keegan Akin":"cards/keegan-akin.jpg",
+  "Keibert Ruiz":"cards/keibert-ruiz.jpg",
+  "Keider Montero":"cards/keider-montero.jpg",
+  "Kendry Rojas":"cards/kendry-rojas.jpg",
+  "Kenley Jansen":"cards/kenley-jansen.jpg",
+  "Kerry Carpenter":"cards/kerry-carpenter.jpg",
+  "Ketel Marte":"cards/ketel-marte.jpg",
+  "Kevin Gausman":"cards/kevin-gausman.jpg",
+  "Kevin Ginkel":"cards/kevin-ginkel.jpg",
+  "Kevin Kelly":"cards/kevin-kelly.jpg",
+  "Kevin McGonigle":"cards/kevin-mcgonigle.jpg",
+  "Kirby Yates":"cards/kirby-yates.jpg",
+  "Kodai Senga":"cards/kodai-senga.jpg",
+  "Kody Clemens":"cards/kody-clemens.jpg",
+  "Kody Funderburk":"cards/kody-funderburk.jpg",
+  "Konnor Griffin":"cards/konnor-griffin.jpg",
+  "Kris Bubic":"cards/kris-bubic.jpg",
+  "Kumar Rocker":"cards/kumar-rocker.jpg",
+  "Kyle Backhus":"cards/kyle-backhus.jpg",
+  "Kyle Bradish":"cards/kyle-bradish.jpg",
+  "Kyle Finnegan":"cards/kyle-finnegan.jpg",
+  "Kyle Freeland":"cards/kyle-freeland.jpg",
+  "Kyle Harrison":"cards/kyle-harrison.jpg",
+  "Kyle Hart":"cards/kyle-hart.jpg",
+  "Kyle Higashioka":"cards/kyle-higashioka.jpg",
+  "Kyle Hurt":"cards/kyle-hurt.jpg",
+  "Kyle Isbel":"cards/kyle-isbel.jpg",
+  "Kyle Karros":"cards/kyle-karros.jpg",
+  "Kyle Leahy":"cards/kyle-leahy.jpg",
+  "Kyle Manzardo":"cards/kyle-manzardo.jpg",
+  "Kyle Schwarber":"cards/kyle-schwarber.jpg",
+  "Kyle Stowers":"cards/kyle-stowers.jpg",
+  "Kyle Tucker":"cards/kyle-tucker.jpg",
+  "Lake Bachar":"cards/lake-bachar.jpg",
+  "Landen Roupp":"cards/landen-roupp.jpg",
+  "Lane Thomas":"cards/lane-thomas.jpg",
+  "Lars Nootbaar":"cards/lars-nootbaar.jpg",
+  "Lawrence Butler":"cards/lawrence-butler.jpg",
+  "Leo Jimenez":"cards/leo-jimenez.jpg",
+  "Leo Rivas":"cards/leo-rivas.jpg",
+  "Leody Taveras":"cards/leody-taveras.jpg",
+  "Liam Hicks":"cards/liam-hicks.jpg",
+  "Logan Gilbert":"cards/logan-gilbert.jpg",
+  "Logan Henderson":"cards/logan-henderson.jpg",
+  "Logan O'Hoppe":"cards/logan-ohoppe.jpg",
+  "Logan Webb":"cards/logan-webb.jpg",
+  "Louis Varland":"cards/louis-varland.jpg",
+  "Lourdes Gurriel Jr.":"cards/lourdes-gurriel-jr.jpg",
+  "Lucas Erceg":"cards/lucas-erceg.jpg",
+  "Luinder Avila":"cards/luinder-avila.jpg",
+  "Luis Arraez":"cards/luis-arraez.jpg",
+  "Luis Campusano":"cards/luis-campusano.jpg",
+  "Luis Castillo":"cards/luis-castillo.jpg",
+  "Luis Garcia Jr.":"cards/luis-garcia-jr.jpg",
+  "Luis Gastelum":"cards/luis-gastelum.jpg",
+  "Luis Lara":"cards/luis-lara.jpg",
+  "Luis Medina":"cards/luis-medina.jpg",
+  "Luis Mey":"cards/luis-mey.jpg",
+  "Luis Rengifo":"cards/luis-rengifo.jpg",
+  "Luis Robert Jr.":"cards/luis-robert-jr.jpg",
+  "Luis Severino":"cards/luis-severino.jpg",
+  "Luis Torrens":"cards/luis-torrens.jpg",
+  "Luisangel Acuna":"cards/luisangel-acuna.jpg",
+  "Luke Keaschall":"cards/luke-keaschall.jpg",
+  "Luke Raley":"cards/luke-raley.jpg",
+  "Luke Weaver":"cards/luke-weaver.jpg",
+  "Mackenzie Gore":"cards/mackenzie-gore.jpg",
+  "Maikel Garcia":"cards/maikel-garcia.jpg",
+  "Manny Machado":"cards/manny-machado.jpg",
+  "Marcelo Mayer":"cards/marcelo-mayer.jpg",
+  "Marcus Semien":"cards/marcus-semien.jpg",
+  "Mark Leiter Jr.":"cards/mark-leiter-jr.jpg",
+  "Mark Vientos":"cards/mark-vientos.jpg",
+  "Martin Perez":"cards/martin-perez.jpg",
+  "Masataka Yoshida":"cards/masataka-yoshida.jpg",
+  "Mason Barnett":"cards/mason-barnett.jpg",
+  "Mason Black":"cards/mason-black.jpg",
+  "Mason Englert":"cards/mason-englert.jpg",
+  "Mason Fluharty":"cards/mason-fluharty.jpg",
+  "Mason Miller":"cards/mason-miller.jpg",
+  "Mason Montgomery":"cards/mason-montgomery.jpg",
+  "Masyn Winn":"cards/masyn-winn.jpg",
+  "Matt Brash":"cards/matt-brash.jpg",
+  "Matt Chapman":"cards/matt-chapman.jpg",
+  "Matt Festa":"cards/matt-festa.jpg",
+  "Matt Gage":"cards/matt-gage.jpg",
+  "Matt McLain":"cards/matt-mclain.jpg",
+  "Matt Olson":"cards/matt-olson.jpg",
+  "Matt Shaw":"cards/matt-shaw.jpg",
+  "Matt Svanson":"cards/matt-svanson.jpg",
+  "Matt Vierling":"cards/matt-vierling.jpg",
+  "Matt Wallner":"cards/matt-wallner.jpg",
+  "Matthew Boyd":"cards/matthew-boyd.jpg",
+  "Matthew Liberatore":"cards/matthew-liberatore.jpg",
+  "Mauricio Dubon":"cards/mauricio-dubon.jpg",
+  "Max Fried":"cards/max-fried.jpg",
+  "Max Kepler":"cards/max-kepler.jpg",
+  "Max Meyer":"cards/max-meyer.jpg",
+  "Max Muncy":"cards/max-muncy.jpg",
+  "Max Scherzer":"cards/max-scherzer.jpg",
+  "Merrill Kelly":"cards/merrill-kelly.jpg",
+  "Michael Busch":"cards/michael-busch.jpg",
+  "Michael Conforto":"cards/michael-conforto.jpg",
+  "Michael Harris II":"cards/michael-harris-ii.jpg",
+  "Michael King":"cards/michael-king.jpg",
+  "Michael Lorenzen":"cards/michael-lorenzen.jpg",
+  "Michael Massey":"cards/michael-massey.jpg",
+  "Michael McGreevy":"cards/michael-mcgreevy.jpg",
+  "Michael Petersen":"cards/michael-petersen.jpg",
+  "Michael Rucker":"cards/michael-rucker.jpg",
+  "Michael Soroka":"cards/michael-soroka.jpg",
+  "Michael Wacha":"cards/michael-wacha.jpg",
+  "Mickey Gasper":"cards/mickey-gasper.jpg",
+  "Mickey Moniak":"cards/mickey-moniak.jpg",
+  "Miguel Amaya":"cards/miguel-amaya.jpg",
+  "Miguel Andujar":"cards/miguel-andujar.jpg",
+  "Miguel Rojas":"cards/miguel-rojas.jpg",
+  "Miguel Vargas":"cards/miguel-vargas.jpg",
+  "Mike Burrows":"cards/mike-burrows.jpg",
+  "Mike Paredes":"cards/mike-paredes.jpg",
+  "Mike Trout":"cards/mike-trout.jpg",
+  "Mike Yastrzemski":"cards/mike-yastrzemski.jpg",
+  "Mitch Farris":"cards/mitch-farris.jpg",
+  "Mitch Keller":"cards/mitch-keller.jpg",
+  "Mitchell Parker":"cards/mitchell-parker.jpg",
+  "Moises Ballesteros":"cards/moises-ballesteros.jpg",
+  "Mookie Betts":"cards/mookie-betts.jpg",
+  "Munetaka Murakami":"cards/munetaka-murakami.jpg",
+  "Myles Straw":"cards/myles-straw.jpg",
+  "Nasim Nunez":"cards/nasim-nunez.jpg",
+  "Nate Pearson":"cards/nate-pearson.jpg",
+  "Nathan Church":"cards/nathan-church.jpg",
+  "Nathan Eovaldi":"cards/nathan-eovaldi.jpg",
+  "Nathan Lukes":"cards/nathan-lukes.jpg",
+  "Nathaniel Lowe":"cards/nathaniel-lowe.jpg",
+  "Nick Allen":"cards/nick-allen.jpg",
+  "Nick Davila":"cards/nick-davila.jpg",
+  "Nick Fortes":"cards/nick-fortes.jpg",
+  "Nick Gonzales":"cards/nick-gonzales.jpg",
+  "Nick Kurtz":"cards/nick-kurtz.jpg",
+  "Nick Lodolo":"cards/nick-lodolo.jpg",
+  "Nick Loftin":"cards/nick-loftin.jpg",
+  "Nick Martinez":"cards/nick-martinez.jpg",
+  "Nick Mears":"cards/nick-mears.jpg",
+  "Nick Sogard":"cards/nick-sogard.jpg",
+  "Nicky Lopez":"cards/nicky-lopez.jpg",
+  "Nico Hoerner":"cards/nico-hoerner.jpg",
+  "Noah Cameron":"cards/noah-cameron.jpg",
+  "Noah Schultz":"cards/noah-schultz.jpg",
+  "Noelvi Marte":"cards/noelvi-marte.jpg",
+  "Nolan Arenado":"cards/nolan-arenado.jpg",
+  "Nolan Gorman":"cards/nolan-gorman.jpg",
+  "Nolan McLean":"cards/nolan-mclean.jpg",
+  "Nolan Schanuel":"cards/nolan-schanuel.jpg",
+  "Oneil Cruz":"cards/oneil-cruz.jpg",
+  "Orion Kerkering":"cards/orion-kerkering.jpg",
+  "Orlando Ribalta":"cards/orlando-ribalta.jpg",
+  "Oswald Peraza":"cards/oswald-peraza.jpg",
+  "Otto Lopez":"cards/otto-lopez.jpg",
+  "Owen Caissie":"cards/owen-caissie.jpg",
+  "Ozzie Albies":"cards/ozzie-albies.jpg",
+  "PJ Poulin":"cards/pj-poulin.jpg",
+  "Parker Messick":"cards/parker-messick.jpg",
+  "Patrick Bailey":"cards/patrick-bailey.jpg",
+  "Patrick Corbin":"cards/patrick-corbin.jpg",
+  "Patrick Sandoval":"cards/patrick-sandoval.jpg",
+  "Paul Blackburn":"cards/paul-blackburn.jpg",
+  "Paul Goldschmidt":"cards/paul-goldschmidt.jpg",
+  "Paul Sewald":"cards/paul-sewald.jpg",
+  "Paul Skenes":"cards/paul-skenes.jpg",
+  "Paxton Schultz":"cards/paxton-schultz.jpg",
+  "Payton Tolle":"cards/payton-tolle.jpg",
+  "Pedro Pages":"cards/pedro-pages.jpg",
+  "Pedro Ramirez":"cards/pedro-ramirez.jpg",
+  "Pete Alonso":"cards/pete-alonso.jpg",
+  "Pete Crow-Armstrong":"cards/pete-crow-armstrong.jpg",
+  "Pete Fairbanks":"cards/pete-fairbanks.jpg",
+  "Peter Lambert":"cards/peter-lambert.jpg",
+  "Petey Halpin":"cards/petey-halpin.jpg",
+  "Peyton Gray":"cards/peyton-gray.jpg",
+  "Phil Maton":"cards/phil-maton.jpg",
+  "Pierce Johnson":"cards/pierce-johnson.jpg",
+  "Rafael Devers":"cards/rafael-devers.jpg",
+  "Rafael Flores Jr.":"cards/rafael-flores-jr.jpg",
+  "Rafael Marchan":"cards/rafael-marchan.jpg",
+  "Raisel Iglesias":"cards/raisel-iglesias.jpg",
+  "Ramon Laureano":"cards/ramon-laureano.jpg",
+  "Randy Arozarena":"cards/randy-arozarena.jpg",
+  "Randy Dobnak":"cards/randy-dobnak.jpg",
+  "Randy Vasquez":"cards/randy-vasquez.jpg",
+  "Ranger Suarez":"cards/ranger-suarez.jpg",
+  "Reid Detmers":"cards/reid-detmers.jpg",
+  "Reynaldo Lopez":"cards/reynaldo-lopez.jpg",
+  "Rhett Lowder":"cards/rhett-lowder.jpg",
+  "Rhys Hoskins":"cards/rhys-hoskins.jpg",
+  "Richard Lovelady":"cards/richard-lovelady.jpg",
+  "Richie Palacios":"cards/richie-palacios.jpg",
+  "Rico Garcia":"cards/rico-garcia.jpg",
+  "Riley Cornelio":"cards/riley-cornelio.jpg",
+  "Riley Greene":"cards/riley-greene.jpg",
+  "Riley O'Brien":"cards/riley-obrien.jpg",
+  "Robbie Ray":"cards/robbie-ray.jpg",
+  "Robby Ahlstrom":"cards/robby-ahlstrom.jpg",
+  "Robert Gasser":"cards/robert-gasser.jpg",
+  "Robert Suarez":"cards/robert-suarez.jpg",
+  "Rodolfo Duran":"cards/rodolfo-duran.jpg",
+  "Roki Sasaki":"cards/roki-sasaki.jpg",
+  "Roman Anthony":"cards/roman-anthony.jpg",
+  "Ron Marinaccio":"cards/ron-marinaccio.jpg",
+  "Ronald Acuna Jr.":"cards/ronald-acuna-jr.jpg",
+  "Royce Lewis":"cards/royce-lewis.jpg",
+  "Ryan Feltner":"cards/ryan-feltner.jpg",
+  "Ryan Gusto":"cards/ryan-gusto.jpg",
+  "Ryan Helsley":"cards/ryan-helsley.jpg",
+  "Ryan Jeffers":"cards/ryan-jeffers.jpg",
+  "Ryan Johnson":"cards/ryan-johnson.jpg",
+  "Ryan Kreidler":"cards/ryan-kreidler.jpg",
+  "Ryan McMahon":"cards/ryan-mcmahon.jpg",
+  "Ryan O'Hearn":"cards/ryan-ohearn.jpg",
+  "Ryan Rolison":"cards/ryan-rolison.jpg",
+  "Ryan Thompson":"cards/ryan-thompson.jpg",
+  "Ryan Vilade":"cards/ryan-vilade.jpg",
+  "Ryan Waldschmidt":"cards/ryan-waldschmidt.jpg",
+  "Ryan Walker":"cards/ryan-walker.jpg",
+  "Ryan Watson":"cards/ryan-watson.jpg",
+  "Ryan Weathers":"cards/ryan-weathers.jpg",
+  "Ryan Yarbrough":"cards/ryan-yarbrough.jpg",
+  "Ryan Zeferjahn":"cards/ryan-zeferjahn.jpg",
+  "Ryne Nelson":"cards/ryne-nelson.jpg",
+  "Ryne Stanek":"cards/ryne-stanek.jpg",
+  "Sal Frelick":"cards/sal-frelick.jpg",
+  "Sal Stewart":"cards/sal-stewart.jpg",
+  "Salvador Perez":"cards/salvador-perez.jpg",
+  "Sam Antonacci":"cards/sam-antonacci.jpg",
+  "Sam Bachman":"cards/sam-bachman.jpg",
+  "Sam Hentges":"cards/sam-hentges.jpg",
+  "Sam Moll":"cards/sam-moll.jpg",
+  "Samad Taylor":"cards/samad-taylor.jpg",
+  "Samuel Basallo":"cards/samuel-basallo.jpg",
+  "Samy Natera Jr.":"cards/samy-natera-jr.jpg",
+  "Sandy Alcantara":"cards/sandy-alcantara.jpg",
+  "Scott Blewett":"cards/scott-blewett.jpg",
+  "Sean Burke":"cards/sean-burke.jpg",
+  "Sean Manaea":"cards/sean-manaea.jpg",
+  "Sean Murphy":"cards/sean-murphy.jpg",
+  "Sean Newcomb":"cards/sean-newcomb.jpg",
+  "Seiya Suzuki":"cards/seiya-suzuki.jpg",
+  "Seranthony Dominguez":"cards/seranthony-dominguez.jpg",
+  "Seth Halvorsen":"cards/seth-halvorsen.jpg",
+  "Seth Johnson":"cards/seth-johnson.jpg",
+  "Seth Lugo":"cards/seth-lugo.jpg",
+  "Shane Baz":"cards/shane-baz.jpg",
+  "Shane Bieber":"cards/shane-bieber.jpg",
+  "Shane Drohan":"cards/shane-drohan.jpg",
+  "Shane McClanahan":"cards/shane-mcclanahan.jpg",
+  "Shaun Anderson":"cards/shaun-anderson.jpg",
+  "Shea Langeliers":"cards/shea-langeliers.jpg",
+  "Shohei Ohtani":"cards/shohei-ohtani.jpg",
+  "Shota Imanaga":"cards/shota-imanaga.jpg",
+  "Simeon Woods Richardson":"cards/simeon-woods-richardson.jpg",
+  "Slade Cecconi":"cards/slade-cecconi.jpg",
+  "Sonny Gray":"cards/sonny-gray.jpg",
+  "Spencer Arrighetti":"cards/spencer-arrighetti.jpg",
+  "Spencer Horwitz":"cards/spencer-horwitz.jpg",
+  "Spencer Jones":"cards/spencer-jones.jpg",
+  "Spencer Miles":"cards/spencer-miles.jpg",
+  "Spencer Steer":"cards/spencer-steer.jpg",
+  "Spencer Torkelson":"cards/spencer-torkelson.jpg",
+  "Starling Marte":"cards/starling-marte.jpg",
+  "Stephen Kolek":"cards/stephen-kolek.jpg",
+  "Steven Cruz":"cards/steven-cruz.jpg",
+  "Steven Kwan":"cards/steven-kwan.jpg",
+  "Steven Matz":"cards/steven-matz.jpg",
+  "Steven Okert":"cards/steven-okert.jpg",
+  "Sung-Mun Song":"cards/sung-mun-song.jpg",
+  "TJ Friedl":"cards/tj-friedl.jpg",
+  "TJ Rumfield":"cards/tj-rumfield.jpg",
+  "Taj Bradley":"cards/taj-bradley.jpg",
+  "Tanner Banks":"cards/tanner-banks.jpg",
+  "Tanner Bibee":"cards/tanner-bibee.jpg",
+  "Tanner Gordon":"cards/tanner-gordon.jpg",
+  "Tanner Scott":"cards/tanner-scott.jpg",
+  "Tarik Skubal":"cards/tarik-skubal.jpg",
+  "Tatsuya Imai":"cards/tatsuya-imai.jpg",
+  "Taylor Clarke":"cards/taylor-clarke.jpg",
+  "Taylor Rogers":"cards/taylor-rogers.jpg",
+  "Taylor Trammell":"cards/taylor-trammell.jpg",
+  "Taylor Walls":"cards/taylor-walls.jpg",
+  "Taylor Ward":"cards/taylor-ward.jpg",
+  "Tejay Antone":"cards/tejay-antone.jpg",
+  "Tim Herrin":"cards/tim-herrin.jpg",
+  "Tim Hill":"cards/tim-hill.jpg",
+  "Tim Mayza":"cards/tim-mayza.jpg",
+  "Tim Tawa":"cards/tim-tawa.jpg",
+  "Tobias Myers":"cards/tobias-myers.jpg",
+  "Tommy Edman":"cards/tommy-edman.jpg",
+  "Tommy Nance":"cards/tommy-nance.jpg",
+  "Tommy Troy":"cards/tommy-troy.jpg",
+  "Tommy White":"cards/tommy-white.jpg",
+  "Tomoyuki Sugano":"cards/tomoyuki-sugano.jpg",
+  "Tony Santillan":"cards/tony-santillan.jpg",
+  "Travis Adams":"cards/travis-adams.jpg",
+  "Travis Bazzana":"cards/travis-bazzana.jpg",
+  "Trea Turner":"cards/trea-turner.jpg",
+  "Trent Grisham":"cards/trent-grisham.jpg",
+  "Trent Thornton":"cards/trent-thornton.jpg",
+  "Trevor Larnach":"cards/trevor-larnach.jpg",
+  "Trevor McDonald":"cards/trevor-mcdonald.jpg",
+  "Trevor Megill":"cards/trevor-megill.jpg",
+  "Trevor Richards":"cards/trevor-richards.jpg",
+  "Trevor Rogers":"cards/trevor-rogers.jpg",
+  "Trevor Story":"cards/trevor-story.jpg",
+  "Trey Gibson":"cards/trey-gibson.jpg",
+  "Trey Yesavage":"cards/trey-yesavage.jpg",
+  "Tristan Beck":"cards/tristan-beck.jpg",
+  "Tristan Gray":"cards/tristan-gray.jpg",
+  "Tristan Peters":"cards/tristan-peters.jpg",
+  "Troy Johnston":"cards/troy-johnston.jpg",
+  "Troy Melton":"cards/troy-melton.jpg",
+  "Ty France":"cards/ty-france.jpg",
+  "Ty Madden":"cards/ty-madden.jpg",
+  "Tyler Alexander":"cards/tyler-alexander.jpg",
+  "Tyler Davis":"cards/tyler-davis.jpg",
+  "Tyler Ferguson":"cards/tyler-ferguson.jpg",
+  "Tyler Freeman":"cards/tyler-freeman.jpg",
+  "Tyler Glasnow":"cards/tyler-glasnow.jpg",
+  "Tyler Heineman":"cards/tyler-heineman.jpg",
+  "Tyler Holton":"cards/tyler-holton.jpg",
+  "Tyler Kinley":"cards/tyler-kinley.jpg",
+  "Tyler Mahle":"cards/tyler-mahle.jpg",
+  "Tyler O'Neill":"cards/tyler-oneill.jpg",
+  "Tyler Phillips":"cards/tyler-phillips.jpg",
+  "Tyler Rogers":"cards/tyler-rogers.jpg",
+  "Tyler Samaniego":"cards/tyler-samaniego.jpg",
+  "Tyler Schweitzer":"cards/tyler-schweitzer.jpg",
+  "Tyler Soderstrom":"cards/tyler-soderstrom.jpg",
+  "Tyler Stephenson":"cards/tyler-stephenson.jpg",
+  "Tyler Tolbert":"cards/tyler-tolbert.jpg",
+  "Tyler Wells":"cards/tyler-wells.jpg",
+  "Tyler Zuber":"cards/tyler-zuber.jpg",
+  "Tyron Guerrero":"cards/tyron-guerrero.jpg",
+  "Tyrone Taylor":"cards/tyrone-taylor.jpg",
+  "Vaughn Grissom":"cards/vaughn-grissom.jpg",
+  "Victor Bericoto":"cards/victor-bericoto.jpg",
+  "Victor Caratini":"cards/victor-caratini.jpg",
+  "Victor Mesa Jr.":"cards/victor-mesa-jr.jpg",
+  "Victor Robles":"cards/victor-robles.jpg",
+  "Victor Scott II":"cards/victor-scott-ii.jpg",
+  "Victor Vodnik":"cards/victor-vodnik.jpg",
+  "Vinnie Pasquantino":"cards/vinnie-pasquantino.jpg",
+  "Vladimir Guerrero Jr.":"cards/vladimir-guerrero-jr.jpg",
+  "Wade Meckler":"cards/wade-meckler.jpg",
+  "Walbert Urena":"cards/walbert-urena.jpg",
+  "Walker Buehler":"cards/walker-buehler.jpg",
+  "Wandy Peralta":"cards/wandy-peralta.jpg",
+  "Wenceel Perez":"cards/wenceel-perez.jpg",
+  "Weston Wilson":"cards/weston-wilson.jpg",
+  "Will Dion":"cards/will-dion.jpg",
+  "Will Klein":"cards/will-klein.jpg",
+  "Will Smith":"cards/will-smith.jpg",
+  "Will Vest":"cards/will-vest.jpg",
+  "Will Warren":"cards/will-warren.jpg",
+  "Willi Castro":"cards/willi-castro.jpg",
+  "William Contreras":"cards/william-contreras.jpg",
+  "Willson Contreras":"cards/willson-contreras.jpg",
+  "Willy Adames":"cards/willy-adames.jpg",
+  "Wilyer Abreu":"cards/wilyer-abreu.jpg",
+  "Wyatt Langford":"cards/wyatt-langford.jpg",
+  "Xander Bogaerts":"cards/xander-bogaerts.jpg",
+  "Xavier Edwards":"cards/xavier-edwards.jpg",
+  "Xzavion Curry":"cards/xzavion-curry.jpg",
+  "Yainer Diaz":"cards/yainer-diaz.jpg",
+  "Yandy Diaz":"cards/yandy-diaz.jpg",
+  "Yennier Cano":"cards/yennier-cano.jpg",
+  "Yoan Moncada":"cards/yoan-moncada.jpg",
+  "Yoendrys Gomez":"cards/yoendrys-gomez.jpg",
+  "Yohan Ramirez":"cards/yohan-ramirez.jpg",
+  "Yohendrick Pinango":"cards/yohendrick-pinango.jpg",
+  "Yordan Alvarez":"cards/yordan-alvarez.jpg",
+  "Yoshinobu Yamamoto":"cards/yoshinobu-yamamoto.jpg",
+  "Yuki Matsui":"cards/yuki-matsui.jpg",
+  "Yusei Kikuchi":"cards/yusei-kikuchi.jpg",
+  "Zac Gallen":"cards/zac-gallen.jpg",
+  "Zac Thornton":"cards/zac-thornton.jpg",
+  "Zach Agnos":"cards/zach-agnos.jpg",
+  "Zach McKinstry":"cards/zach-mckinstry.jpg",
+  "Zach Neto":"cards/zach-neto.jpg",
+  "Zack Gelof":"cards/zack-gelof.jpg",
+  "Zack Kelly":"cards/zack-kelly.jpg",
+  "Zack Littell":"cards/zack-littell.jpg",
+  "Zack Wheeler":"cards/zack-wheeler.jpg",
+  "Zebby Matthews":"cards/zebby-matthews.jpg"
+};
+
+// Attaches a real-card image path (if this player has one) right before a card object is returned —
+// called from all four card constructors below, so every path a player's card can be built through
+// picks up the same real-card image automatically.
+function attachRealCardImage(card){
+  if(PLAYER_IMAGES[card.name]) card.image = PLAYER_IMAGES[card.name];
+  return card;
+}
 function deriveBatter(name,pos,s){
   const oneB = Math.max(0, s.H - s.d2 - s.d3 - s.HR);
   const PA = Math.max(1, s.AB + s.BB);
@@ -1155,7 +2062,7 @@ function deriveBatter(name,pos,s){
   const advProb = batterAdvantageProb(onBase);
   const adjRates = adjustForBaseline(realRates, BASELINE_PITCHER_RATES, advProb, BATTER_FLOORS);
   const chart = chartFromCounts(distributeToTwenty(adjRates), BATTER_CHART_ORDER);
-  return {name, pos, points, onBase, speed, chart, realStats:s};
+  return attachRealCardImage({name, pos, points, onBase, speed, chart, realStats:s});
 }
 
 // s: {IP,ERA,H,HR,BB,SO,BF,GS,G}
@@ -1177,7 +2084,7 @@ function derivePitcher(name,s){
   // baseline used here must be the baseline batter, not baseline pitcher.
   const adjRates = adjustForBaseline(realRates, BASELINE_BATTER_RATES, advProb, PITCHER_FLOORS);
   const chart = chartFromCounts(distributeToTwenty(adjRates), PITCHER_CHART_ORDER);
-  return {name, points, command, xZone, ip, chart, realStats:s};
+  return attachRealCardImage({name, points, command, xZone, ip, chart, realStats:s});
 }
 
 // Position eligibility per rule 1.1.A/3.5.B — a player may only fill a defensive
@@ -1216,6 +2123,7 @@ function P(name,IP,ERA,H,HR,BB,SO,BF,GS,G,override){
     if(override.chart!==undefined) card.chart = override.chart;
     if(override.role!==undefined) card.role = override.role;
     if(override.ip!==undefined) card.ip = override.ip;
+    if(override.image!==undefined) card.image = override.image;
   }
   return card;
 }
@@ -1808,7 +2716,7 @@ function cardBatter(name, elig, points, speed, chartCounts, onBase, fielding, ha
   const ob = (onBase!==undefined) ? onBase : BASELINE_BATTER_ONBASE;
   const obj = { name, pos:(elig&&elig[0])||'DH', elig:(elig||[]).slice(), points, speed, onBase:ob, fielding:fielding||{}, chart, obFromCard: onBase!==undefined };
   if(handOverride){ obj.hand = handOverride; obj._handLocked = true; }
-  return obj;
+  return attachRealCardImage(obj);
 }
 // Builds a pitcher directly from real-card data. Command is the number printed
 // inside the baseball badge on the real card — pass it exactly when known.
@@ -1822,7 +2730,7 @@ function cardPitcher(name, role, points, chartCounts, ip, command, handOverride)
   const xZone = 1;
   const obj = { name, points, command:cmd, xZone, ip, chart, role, cmdFromCard: command!==undefined };
   if(handOverride){ obj.hand = handOverride; obj._handLocked = true; }
-  return obj;
+  return attachRealCardImage(obj);
 }
 
 
@@ -8342,74 +9250,101 @@ function resClass(outcome){ return IS_HIT[outcome] ? 'hit' : (outcome==='BB' ? '
 // opts: {isPitcher, tired, onBaseBonus} — all gameplay-only extras, optional.
 function renderFullCard(player, team, opts){
   opts = opts || {};
-  const isPitcher = !!opts.isPitcher;
-  const tired = opts.tired || 0;
-  const onBaseBonus = opts.onBaseBonus || 0;
-  const handLabel = player.hand==='S' ? 'S' : (player.hand==='L' ? 'L' : 'R');
+  // Real card: an actual photographed/scanned card image, referenced by file path (e.g.
+  // 'cards/paul-skenes.jpg') rather than embedded in this file — the browser fetches it directly
+  // from wherever the game itself is hosted, so adding more of these never grows this file at all.
+  // Purely a display swap: the player's own points/chart/command etc. are completely untouched and
+  // still drive every actual gameplay calculation exactly as before — only the *card view* changes.
+  function buildTemplateCard(){
+    const isPitcher = !!opts.isPitcher;
+    const tired = opts.tired || 0;
+    const onBaseBonus = opts.onBaseBonus || 0;
+    const handLabel = player.hand==='S' ? 'S' : (player.hand==='L' ? 'L' : 'R');
 
-  const card = el('div','fullcard');
-  const heroColor = (team && team.color) || '#333333';
-  card.style.setProperty('--heroColor', heroColor);
-  // Bright team colors (e.g. Pirates gold, Marlins cyan) make the default white
-  // header text unreadable near the top-left of the gradient, where it's still
-  // close to full team color rather than blended toward black. Reuse the same
-  // WCAG contrast helper already used for team-select chips instead of
-  // hard-coding white per team.
-  if(readableTextColor(heroColor) !== '#fff') card.classList.add('fullcard-light-hero');
+    const card = el('div','fullcard');
+    const heroColor = (team && team.color) || '#333333';
+    card.style.setProperty('--heroColor', heroColor);
+    // Bright team colors (e.g. Pirates gold, Marlins cyan) make the default white
+    // header text unreadable near the top-left of the gradient, where it's still
+    // close to full team color rather than blended toward black. Reuse the same
+    // WCAG contrast helper already used for team-select chips instead of
+    // hard-coding white per team.
+    if(readableTextColor(heroColor) !== '#fff') card.classList.add('fullcard-light-hero');
 
-  const main = el('div','cardv3-main');
+    const main = el('div','cardv3-main');
 
-  const header = el('div','cardv3-header');
-  const headerTop = el('div','cardv3-header-top');
-  headerTop.innerHTML = `<div class="cardv3-abbr">${(team && (team.abbr || team.nick.slice(0,3).toUpperCase()))||''}</div>`;
-  const badgeWrap = document.createElement('div');
-  const badge2 = el('div','cardv3-badge2', isPitcher ? player.command : (player.onBase + (onBaseBonus?'+':'')));
-  badgeWrap.appendChild(badge2);
-  badgeWrap.appendChild(el('div','cardv3-badgelbl', isPitcher?'CMD':'ON-BASE'));
-  headerTop.appendChild(badgeWrap);
-  header.appendChild(headerTop);
-  const roleLine = isPitcher
-    ? `${player.ip>=6?'Starter':'Reliever'} \u00b7 ${handLabel}HP \u00b7 IP ${player.ip}`
-    : `${player.pos} \u00b7 Bats ${handLabel}`;
-  header.appendChild(el('div','cardv3-role', roleLine));
-  if(!isPitcher && player.fielding && Object.keys(player.fielding).length){
-    const fieldStr = Object.entries(player.fielding).map(([pos,r])=>`${pos} ${r>=0?'+':''}${r}`).join('  \u00b7  ');
-    header.appendChild(el('div','cardv3-field', fieldStr));
+    const header = el('div','cardv3-header');
+    const headerTop = el('div','cardv3-header-top');
+    headerTop.innerHTML = `<div class="cardv3-abbr">${(team && (team.abbr || team.nick.slice(0,3).toUpperCase()))||''}</div>`;
+    const badgeWrap = document.createElement('div');
+    const badge2 = el('div','cardv3-badge2', isPitcher ? player.command : (player.onBase + (onBaseBonus?'+':'')));
+    badgeWrap.appendChild(badge2);
+    badgeWrap.appendChild(el('div','cardv3-badgelbl', isPitcher?'CMD':'ON-BASE'));
+    headerTop.appendChild(badgeWrap);
+    header.appendChild(headerTop);
+    const roleLine = isPitcher
+      ? `${player.ip>=6?'Starter':'Reliever'} \u00b7 ${handLabel}HP \u00b7 IP ${player.ip}`
+      : `${player.pos} \u00b7 Bats ${handLabel}`;
+    header.appendChild(el('div','cardv3-role', roleLine));
+    if(!isPitcher && player.fielding && Object.keys(player.fielding).length){
+      const fieldStr = Object.entries(player.fielding).map(([pos,r])=>`${pos} ${r>=0?'+':''}${r}`).join('  \u00b7  ');
+      header.appendChild(el('div','cardv3-field', fieldStr));
+    }
+    if(!isPitcher){
+      header.appendChild(el('div','cardv3-field', `SPD ${player.speed}`));
+    }
+    header.appendChild(el('div','cardv3-pts', `${player.points} PT.`));
+    main.appendChild(header);
+
+    const heroArea = el('div','cardv3-hero2');
+    const diamond = el('div','cardv3-hero2-diamond');
+    heroArea.appendChild(diamond);
+    const stack = el('div','cardv3-hero2-stack');
+    const nameEl = el('div','cardv3-hero2-name', player.name);
+    const nameFontSize = player.name.length<=11 ? 24 : (player.name.length<=15 ? 20 : (player.name.length<=19 ? 17 : 15));
+    nameEl.style.fontSize = nameFontSize+'px';
+    stack.appendChild(nameEl);
+    heroArea.appendChild(stack);
+    main.appendChild(heroArea);
+
+    if(isPitcher && tired>0){
+      main.appendChild(el('div','cardv3-warn', `TIRED \u2212${tired} CMD \u00b7 Power Die in play`));
+    } else if(!isPitcher && onBaseBonus){
+      main.appendChild(el('div','cardv3-warn', `IBB chain: On-Base +${onBaseBonus} this at-bat`));
+    }
+
+    const results = el('div','cardv3-results');
+    chartRanges(player.chart).forEach(r=>{
+      const cls = resClass(r.outcome) + (r.outcome==='HR' ? ' hr' : '');
+      const row = el('div','cardv3-resrow '+cls);
+      row.innerHTML = `<span class="rng">${r.range}</span><span class="outname">${OUTCOME_LABEL[r.outcome]||r.outcome}</span>`;
+      results.appendChild(row);
+    });
+    main.appendChild(results);
+
+    card.appendChild(main);
+    return card;
   }
-  if(!isPitcher){
-    header.appendChild(el('div','cardv3-field', `SPD ${player.speed}`));
+
+  if(player.image){
+    const wrap = el('div','fullcard real-card-wrap');
+    const img = document.createElement('img');
+    img.className = 'real-card-img';
+    img.src = player.image;
+    img.alt = player.name;
+    img.loading = 'lazy';
+    // If the photo hasn't actually been uploaded yet (or the filename doesn't match), fall back to
+    // the normal template instead of leaving a broken image icon on screen — the game stays fully
+    // usable the whole time a real-card rollout is still in progress.
+    img.onerror = ()=>{
+      wrap.innerHTML = '';
+      wrap.className = 'fullcard';
+      wrap.appendChild(buildTemplateCard());
+    };
+    wrap.appendChild(img);
+    return wrap;
   }
-  header.appendChild(el('div','cardv3-pts', `${player.points} PT.`));
-  main.appendChild(header);
-
-  const heroArea = el('div','cardv3-hero2');
-  const diamond = el('div','cardv3-hero2-diamond');
-  heroArea.appendChild(diamond);
-  const stack = el('div','cardv3-hero2-stack');
-  const nameEl = el('div','cardv3-hero2-name', player.name);
-  const nameFontSize = player.name.length<=11 ? 24 : (player.name.length<=15 ? 20 : (player.name.length<=19 ? 17 : 15));
-  nameEl.style.fontSize = nameFontSize+'px';
-  stack.appendChild(nameEl);
-  heroArea.appendChild(stack);
-  main.appendChild(heroArea);
-
-  if(isPitcher && tired>0){
-    main.appendChild(el('div','cardv3-warn', `TIRED \u2212${tired} CMD \u00b7 Power Die in play`));
-  } else if(!isPitcher && onBaseBonus){
-    main.appendChild(el('div','cardv3-warn', `IBB chain: On-Base +${onBaseBonus} this at-bat`));
-  }
-
-  const results = el('div','cardv3-results');
-  chartRanges(player.chart).forEach(r=>{
-    const cls = resClass(r.outcome) + (r.outcome==='HR' ? ' hr' : '');
-    const row = el('div','cardv3-resrow '+cls);
-    row.innerHTML = `<span class="rng">${r.range}</span><span class="outname">${OUTCOME_LABEL[r.outcome]||r.outcome}</span>`;
-    results.appendChild(row);
-  });
-  main.appendChild(results);
-
-  card.appendChild(main);
-  return card;
+  return buildTemplateCard();
 }
 
 function renderGame(){
