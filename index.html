@@ -2040,6 +2040,10 @@ const PLAYER_IMAGES = {
 // Real-card image paths that have already failed to load (every extension tried) this session —
 // checked by renderFullCard so a known-broken photo never triggers a repeat fetch attempt.
 const REAL_CARD_BROKEN_PATHS = new Set();
+// The reverse: basePath -> the extension already confirmed to load successfully, so repeat renders
+// (there are a lot of these — every animation tick during a die roll re-renders the whole screen)
+// skip straight to the working file instead of re-running the jpg/png/jpeg cascade from scratch.
+const REAL_CARD_WORKING_EXT = new Map();
 function attachRealCardImage(card){
   if(PLAYER_IMAGES[card.name]) card.image = PLAYER_IMAGES[card.name];
   return card;
@@ -2405,6 +2409,46 @@ function canSignFreeAgent(teamIdx, player){
   if(!SEASON.capEnabled) return true;
   return teamTotalPoints(SEASON.teams[teamIdx]) + (player.points||0) <= DRAFT_CAP;
 }
+// Position-slot gating: a free agent can only join a roster that has room for their category — an
+// open lineup slot or bench spot for a batter, an open rotation spot for a starter, an open bullpen
+// spot for a reliever. If there's no room, signing isn't blocked outright — the flow below offers a
+// release instead — but it's never allowed to just silently balloon a roster past its real shape
+// (e.g. a 6th starter) the way a plain, ungated push onto the array would.
+function checkSignRoomFor(teamIdx, player){
+  const team = SEASON.teams[teamIdx];
+  const isPitcher = player.role==='SP' || player.role==='RP';
+  if(isPitcher){
+    if(player.role==='SP') return { hasRoom: team.rotation.length < (team.rotationCap||5), category:'SP' };
+    return { hasRoom: team.bullpen.length < (team.bullpenCap||8), category:'RP' };
+  }
+  const openLineupSlot = team.lineup.find(p=>p.name==='(unfilled)' && p.pos!=='DH' && player.elig && player.elig.includes(p.pos));
+  const openDH = team.lineup.find(p=>p.pos==='DH' && p.name==='(unfilled)');
+  const benchRoom = team.bench.length < (team.benchCap||4);
+  return { hasRoom: !!openLineupSlot || !!openDH || benchRoom, category:'batter' };
+}
+// Kicks off the sign flow for a free agent: if there's no room for their category, walks through a
+// release first; either way, ends on a confirm screen showing the cap balance before/after (if a cap
+// is in play) before the actual roster move happens.
+function startSignFreeAgent(teamIdx, player){
+  const { hasRoom, category } = checkSignRoomFor(teamIdx, player);
+  FA_SIGN_FLOW = { player, teamIdx, category, releaseTarget:null, stage: hasRoom ? 'confirm' : 'release' };
+  render();
+}
+function cancelSignFlow(){ FA_SIGN_FLOW = null; render(); }
+function pickReleaseTarget(player){
+  FA_SIGN_FLOW.releaseTarget = player;
+  FA_SIGN_FLOW.stage = 'confirm';
+  render();
+}
+function confirmSignFlow(){
+  const { player, teamIdx, releaseTarget } = FA_SIGN_FLOW;
+  if(releaseTarget) dropPlayerFromTeam(teamIdx, releaseTarget);
+  signFreeAgentToTeam(teamIdx, player);
+  FA_SIGN_FLOW = null;
+  render();
+}
+function openPlayerCardView(player, team){ PLAYER_CARD_VIEW = { player, team }; render(); }
+function closePlayerCardView(){ PLAYER_CARD_VIEW = null; render(); }
 // Adds a free agent onto a finalized team's roster — same slot-priority a draft pick would use
 // (open position slot > DH > bench for batters; rotation/bullpen for pitchers), just applied to the
 // flat post-draft team shape instead of the in-progress draftRoster shape. Two-way players never
@@ -2690,7 +2734,8 @@ function finalizeDraftedTeam(roster, nick, color){
   const bench = roster.backupC ? [roster.backupC, ...roster.bench] : roster.bench.slice();
   return { city:'', nick, defense:{battery:3, infield:3, outfield:3}, color,
     lineup, bench, rotation:roster.rotation.slice(), bullpen:roster.bullpen.slice(),
-    pitchers:[roster.rotation[0], ...roster.bullpen], rosterSize: DRAFT.rosterSize };
+    pitchers:[roster.rotation[0], ...roster.bullpen], rosterSize: DRAFT.rosterSize,
+    rotationCap: DRAFT.rotationCap, bullpenCap: DRAFT.bullpenCap, benchCap: bench.length };
 }
 
 /* Rosters are now built from a full candidate POOL per team (every real card
@@ -2964,7 +3009,8 @@ function buildRosterFromPool(city, nick, defense, batterPool, pitcherPool, color
   const distinctNames = new Set([...lineup, ...bench, ...rotation, ...bullpen]
     .filter(p=>p.name!=='(unfilled)').map(p=>p.name));
   return { city, nick, defense, lineup, bench, rotation, bullpen,
-    pitchers:[rotation[0], ...bullpen], color, abbr, extra, rosterSize: distinctNames.size };
+    pitchers:[rotation[0], ...bullpen], color, abbr, extra, rosterSize: distinctNames.size,
+    rotationCap: 4, bullpenCap: 5, benchCap };
 }
 
 const PIT_BATTERS = [
@@ -4870,6 +4916,13 @@ let SEASON_AWAY_HUMAN=true, SEASON_HOME_HUMAN=true;
 // player once the draft finishes; FA_VIEW/FA_FILTER/FA_TEAM_IDX drive the browsing screen the same
 // way DRAFT_FILTER/DRAFT_ROSTER_VIEW drive the draft's own pool screen.
 let FA_VIEW=false, FA_FILTER='ALL', FA_TEAM_IDX=0;
+// {player, teamIdx, needsRelease, category, releaseTarget, stage} — walks through releasing a
+// roster spot (if needed to make room) and, once a slot is available, a final confirm showing the
+// cap balance before/after (if a cap is in play) before the sign actually goes through.
+let FA_SIGN_FLOW = null;
+// {player, team} — set whenever a name is tapped (free agent list or a team's own roster) to view
+// the full card without taking any roster action.
+let PLAYER_CARD_VIEW = null;
 // {teamIdx, player} — set when "Call Up" is tapped on a minor leaguer in the season roster view;
 // shows a picker of who on the active roster to send down in exchange.
 let SEASON_CALLUP_PICK = null;
@@ -4999,6 +5052,8 @@ function renderReal(){
   if(SCREEN==='seasonhub' && SEASON_STATS_VIEW){ renderSeasonStatsView(); }
   if(SCREEN==='seasonhub' && SEASON_LEADERS_VIEW){ renderSeasonLeadersView(); }
   if(SCREEN==='seasonhub' && FA_VIEW){ renderFreeAgentsView(); }
+  if(SCREEN==='seasonhub' && FA_VIEW && FA_SIGN_FLOW){ renderFaSignFlow(); }
+  if(PLAYER_CARD_VIEW){ renderPlayerCardViewOverlay(); }
   if(SCREEN==='playoffs' && PLAYOFF_SCHEDULE_VIEW){ renderPlayoffScheduleView(); }
   if(SCREEN==='roster' && LINEUP_EDIT){ renderLineupEditPicker(); }
   else if(SCREEN==='game') renderGame();
@@ -6091,6 +6146,13 @@ function renderSeasonRosterView(){
     dropBtn.onclick = (e)=>{ e.stopPropagation(); showConfirm(`Drop ${p.name} from ${SEASON.names[i]}? He\\u2019ll return to the free agent pool.`, ()=>{ dropPlayerFromTeam(i, p); render(); }); };
     row.appendChild(dropBtn);
   };
+  const addCardViewClick = (row, p)=>{
+    if(p.name==='(unfilled)') return;
+    const nameEl = row.querySelector('.nm');
+    if(!nameEl) return;
+    nameEl.style.textDecoration = 'underline';
+    nameEl.onclick = (e)=>{ e.stopPropagation(); openPlayerCardView(p, team); };
+  };
   body.appendChild(el('div','sub2', `Active Roster \u2014 ${team.rosterSize||22}-man`));
   const list = el('div','plist');
   team.lineup.forEach(p=>{
@@ -6098,24 +6160,28 @@ function renderSeasonRosterView(){
     row.innerHTML = p.name==='(unfilled)'
       ? `<div class="pos">${p.pos}</div><div class="nm" style="color:var(--muted);">\u2014 open \u2014</div>`
       : `<div class="pos">${p.pos}</div><div class="nm">${p.name}${p.twoWay?' <span class="twoway-tag">Two-Way</span>':''}</div><div class="sub2">${p.points} pt</div>`;
+    addCardViewClick(row, p);
     addDropBtn(row, p);
     list.appendChild(row);
   });
   team.bench.forEach(p=>{
     const row = el('div','prow');
     row.innerHTML = `<div class="pos">BN</div><div class="nm">${p.name}</div><div class="sub2">${p.points} pt</div>`;
+    addCardViewClick(row, p);
     addDropBtn(row, p);
     list.appendChild(row);
   });
   team.rotation.forEach(p=>{
     const row = el('div','prow');
     row.innerHTML = `<div class="pos">SP</div><div class="nm">${p.name}${p.twoWay?' <span class="twoway-tag">Two-Way</span>':''}</div><div class="sub2">${p.points} pt</div>`;
+    addCardViewClick(row, p);
     addDropBtn(row, p);
     list.appendChild(row);
   });
   team.bullpen.forEach(p=>{
     const row = el('div','prow');
     row.innerHTML = `<div class="pos">RP</div><div class="nm">${p.name}${p.twoWay?' <span class="twoway-tag">Two-Way</span>':''}</div><div class="sub2">${p.points} pt</div>`;
+    addCardViewClick(row, p);
     addDropBtn(row, p);
     list.appendChild(row);
   });
@@ -6230,20 +6296,91 @@ function renderFreeAgentsView(){
   players.forEach(p=>{
     const isPitcher = p.role==='SP'||p.role==='RP';
     const posLabel = isPitcher ? p.role : ((p.elig&&p.elig[0])||p.pos||'?');
-    const metaExtra = isPitcher ? (' \\u00b7 CMD '+p.command) : (' \\u00b7 OB '+p.onBase);
+    const metaExtra = isPitcher ? (' \u00b7 CMD '+p.command) : (' \u00b7 OB '+p.onBase);
     const legal = canSignFreeAgent(FA_TEAM_IDX, p);
     const row = el('div','draftrow'+(legal?'':' disabled'));
     row.innerHTML = `<div class="dpos">${posLabel}</div>
-      <div class="dinfo"><div class="dname">${p.name}</div><div class="dmeta">${p.origin && TEAM_POOL[p.origin] ? TEAM_POOL[p.origin].nick+' \\u00b7 ' : ''}${isPitcher?p.role:(p.elig||[]).join('/')}${metaExtra}</div></div>
+      <div class="dinfo"><div class="dname">${p.name}</div><div class="dmeta">${p.origin && TEAM_POOL[p.origin] ? TEAM_POOL[p.origin].nick+' \u00b7 ' : ''}${isPitcher?p.role:(p.elig||[]).join('/')}${metaExtra}</div></div>
       <div class="dpts">${p.points}</div>`;
+    row.querySelector('.dname').style.textDecoration = 'underline';
+    row.querySelector('.dname').onclick = (e)=>{ e.stopPropagation(); openPlayerCardView(p, null); };
     if(legal){
-      row.onclick = ()=>{ showConfirm(`Sign ${p.name} to ${SEASON.names[FA_TEAM_IDX]}?`, ()=>{ signFreeAgentToTeam(FA_TEAM_IDX, p); render(); }); };
+      const signBtn = el('button','btn small blueline','Sign'); signBtn.style.marginLeft='8px';
+      signBtn.onclick = (e)=>{ e.stopPropagation(); startSignFreeAgent(FA_TEAM_IDX, p); };
+      row.appendChild(signBtn);
     }
     list.appendChild(row);
   });
   body.appendChild(list);
   ov.appendChild(body);
   root.appendChild(ov);
+}
+// Walks a free-agent sign through: (1) if there's no open roster spot for their category, pick who to
+// release first; (2) either way, a final confirm showing the cap balance before/after (if a cap is in
+// play) before the actual roster move happens.
+function renderFaSignFlow(){
+  const { player, teamIdx, category, releaseTarget, stage } = FA_SIGN_FLOW;
+  const team = SEASON.teams[teamIdx];
+  const overlay = el('div','confirm-overlay');
+  const box = el('div','confirm-box');
+
+  if(stage==='release'){
+    box.appendChild(el('div','confirm-msg','No Open Roster Spot'));
+    const note = el('div','rulesnote', `${team.city||''} ${team.nick} has no room for another ${category==='SP'?'starter':category==='RP'?'reliever':'batter'}. Choose someone to release to make room for ${player.name}.`);
+    note.style.marginTop='8px';
+    box.appendChild(note);
+    const candidates = category==='SP' ? team.rotation
+      : category==='RP' ? team.bullpen
+      : [...team.lineup.filter(x=>x.name!=='(unfilled)'), ...team.bench];
+    const list = el('div','plist'); list.style.marginTop='10px';
+    candidates.forEach(cand=>{
+      const row = el('div','prow clickable');
+      const posLabel = category==='batter' ? (cand.pos||'BN') : cand.role;
+      row.innerHTML = `<div class="pos">${posLabel}</div><div class="nm">${cand.name}</div><div class="sub2">${cand.points} pt</div>`;
+      row.onclick = ()=>pickReleaseTarget(cand);
+      list.appendChild(row);
+    });
+    box.appendChild(list);
+    const cancelBtn = el('button','btn small secondary','Cancel'); cancelBtn.style.marginTop='12px';
+    cancelBtn.onclick = cancelSignFlow;
+    box.appendChild(cancelBtn);
+  } else {
+    box.appendChild(el('div','confirm-msg','Complete Signing?'));
+    let msg = `Sign <b>${player.name}</b> (${player.points} pt) to ${team.city||''} ${team.nick}`;
+    if(releaseTarget) msg += `, releasing <b>${releaseTarget.name}</b> to make room`;
+    msg += '.';
+    const line = el('div',null); line.innerHTML = msg; line.style.marginTop='8px';
+    box.appendChild(line);
+    if(SEASON.capEnabled){
+      const before = teamTotalPoints(team);
+      const after = before + (player.points||0) - (releaseTarget ? (releaseTarget.points||0) : 0);
+      const fine = el('div','rulesnote', `Current Balance: <b>${before}</b> / ${DRAFT_CAP} pts &rarr; New Balance: <b>${after}</b> / ${DRAFT_CAP} pts`);
+      box.appendChild(fine);
+    }
+    const row = el('div','btnrow'); row.style.marginTop='14px';
+    const yesBtn = el('button','btn small','Confirm'); yesBtn.onclick = confirmSignFlow;
+    const noBtn = el('button','btn small secondary','Cancel'); noBtn.onclick = cancelSignFlow;
+    row.appendChild(yesBtn); row.appendChild(noBtn);
+    box.appendChild(row);
+  }
+
+  overlay.appendChild(box);
+  root.appendChild(overlay);
+}
+// Plain full-card viewer — no action, just look at the card. Works for a free agent (team is null)
+// or a rostered player (team supplies real colors/abbr for the header).
+function renderPlayerCardViewOverlay(){
+  const { player, team } = PLAYER_CARD_VIEW;
+  const overlay = el('div','confirm-overlay');
+  const box = el('div','confirm-box');
+  const wrap = el('div','fullcard-single-wrap');
+  wrap.appendChild(renderFullCard(player, team, {isPitcher: player.role==='SP'||player.role==='RP'}));
+  box.appendChild(wrap);
+  const closeBtn = el('button','btn small secondary','Close'); closeBtn.style.width='100%'; closeBtn.style.marginTop='12px';
+  closeBtn.onclick = closePlayerCardView;
+  box.appendChild(closeBtn);
+  overlay.appendChild(box);
+  root.appendChild(overlay);
 }
 
 /* ---------------- SEASON MODE (4-8 owners, snake draft, randomized schedule) ---------------- */
@@ -9344,21 +9481,41 @@ function renderFullCard(player, team, opts){
     img.loading = 'lazy';
     // Try a few common extensions in turn so it doesn't matter whether a photo got saved as .jpg,
     // .png, or .jpeg — only once every extension has failed does it fall back to the template.
-    const extensionsToTry = ['jpg','png','jpeg'];
-    let tryIndex = 0;
-    const tryNextExtension = ()=>{
-      if(tryIndex >= extensionsToTry.length){
+    // Once one is confirmed working, it's cached in REAL_CARD_WORKING_EXT so every render after the
+    // very first one (there are a LOT of re-renders during something like a die-roll animation) loads
+    // directly instead of re-running the whole failed-attempt cascade from scratch each time — that
+    // repeated cascade, restarting mid-flight on every animation tick, was what made cards flicker/
+    // disappear during rolls.
+    const knownGoodExt = REAL_CARD_WORKING_EXT.get(basePath);
+    if(knownGoodExt){
+      img.src = `${basePath}.${knownGoodExt}`;
+      img.onerror = ()=>{
+        // The previously-good extension stopped working (rare — e.g. the file got renamed/removed) —
+        // forget it and fall back to the template rather than getting stuck retrying forever.
+        REAL_CARD_WORKING_EXT.delete(basePath);
         REAL_CARD_BROKEN_PATHS.add(basePath);
         wrap.innerHTML = '';
         wrap.className = 'fullcard';
         wrap.appendChild(buildTemplateCard());
-        return;
-      }
-      img.src = `${basePath}.${extensionsToTry[tryIndex]}`;
-      tryIndex++;
-    };
-    img.onerror = tryNextExtension;
-    tryNextExtension();
+      };
+    } else {
+      const extensionsToTry = ['jpg','png','jpeg'];
+      let tryIndex = 0;
+      const tryNextExtension = ()=>{
+        if(tryIndex >= extensionsToTry.length){
+          REAL_CARD_BROKEN_PATHS.add(basePath);
+          wrap.innerHTML = '';
+          wrap.className = 'fullcard';
+          wrap.appendChild(buildTemplateCard());
+          return;
+        }
+        img.src = `${basePath}.${extensionsToTry[tryIndex]}`;
+        tryIndex++;
+      };
+      img.onload = ()=>{ REAL_CARD_WORKING_EXT.set(basePath, extensionsToTry[tryIndex-1]); };
+      img.onerror = tryNextExtension;
+      tryNextExtension();
+    }
     wrap.appendChild(img);
     return wrap;
   }
@@ -9430,7 +9587,7 @@ function renderGame(){
   // point would still be pointing at whoever's PREVIOUS at-bat concluded, showing the wrong batter
   // entirely (the person actually standing at the plate right now, mid-count, gets bumped off their
   // own card by whoever hit last).
-  const freshBatterStages = ['defense-choice','offense-choice','pitch-thrown','swing-rolling','steal-defense-throw','steal-rolling','steal-result'];
+  const freshBatterStages = ['defense-choice','offense-choice','pitch-thrown','swing-rolling','steal-defense-throw','steal-rolling','steal-result','abs-challenge-offer','abs-challenge-rolling','abs-challenge-result'];
   const stillShowingLastPA = GS.lastResolved && !freshBatterStages.includes(GS.stage);
   const displayBatter = stillShowingLastPA ? GS.lastResolved.batter : currentBatter(GS);
   vs.appendChild(renderFullCard(displayBatter, TEAMS[battingTeamKey(GS)], {isPitcher:false, onBaseBonus: GS.onBaseBonus}));
