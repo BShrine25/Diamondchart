@@ -2037,6 +2037,9 @@ const PLAYER_IMAGES = {
 // Attaches a real-card image path (if this player has one) right before a card object is returned —
 // called from all four card constructors below, so every path a player's card can be built through
 // picks up the same real-card image automatically.
+// Real-card image paths that have already failed to load (every extension tried) this session —
+// checked by renderFullCard so a known-broken photo never triggers a repeat fetch attempt.
+const REAL_CARD_BROKEN_PATHS = new Set();
 function attachRealCardImage(card){
   if(PLAYER_IMAGES[card.name]) card.image = PLAYER_IMAGES[card.name];
   return card;
@@ -9326,21 +9329,36 @@ function renderFullCard(player, team, opts){
     return card;
   }
 
-  if(player.image){
+  // Real-card images that have already failed every extension this session — skip straight to the
+  // template for these without even attempting a fetch. Without this, every single card render (and
+  // there are a lot of them — the pitch/swing screens redraw the pitcher's and batter's cards on
+  // basically every roll) would kick off a fresh image request that's already known to fail, each one
+  // eventually mutating the DOM out from under whatever else is rendering/animating at that moment —
+  // which is exactly what was causing the roll animation to glitch.
+  const basePath = player.image ? player.image.replace(/\.[a-zA-Z0-9]+$/, '') : null;
+  if(basePath && !REAL_CARD_BROKEN_PATHS.has(basePath)){
     const wrap = el('div','fullcard real-card-wrap');
     const img = document.createElement('img');
     img.className = 'real-card-img';
-    img.src = player.image;
     img.alt = player.name;
     img.loading = 'lazy';
-    // If the photo hasn't actually been uploaded yet (or the filename doesn't match), fall back to
-    // the normal template instead of leaving a broken image icon on screen — the game stays fully
-    // usable the whole time a real-card rollout is still in progress.
-    img.onerror = ()=>{
-      wrap.innerHTML = '';
-      wrap.className = 'fullcard';
-      wrap.appendChild(buildTemplateCard());
+    // Try a few common extensions in turn so it doesn't matter whether a photo got saved as .jpg,
+    // .png, or .jpeg — only once every extension has failed does it fall back to the template.
+    const extensionsToTry = ['jpg','png','jpeg'];
+    let tryIndex = 0;
+    const tryNextExtension = ()=>{
+      if(tryIndex >= extensionsToTry.length){
+        REAL_CARD_BROKEN_PATHS.add(basePath);
+        wrap.innerHTML = '';
+        wrap.className = 'fullcard';
+        wrap.appendChild(buildTemplateCard());
+        return;
+      }
+      img.src = `${basePath}.${extensionsToTry[tryIndex]}`;
+      tryIndex++;
     };
+    img.onerror = tryNextExtension;
+    tryNextExtension();
     wrap.appendChild(img);
     return wrap;
   }
