@@ -5434,14 +5434,14 @@ function renderSubmenu(){
         msgDiv.textContent = 'Logging in\u2026';
         const res = await loginPlayer(nameInput.value.trim(), pinInput.value.trim());
         if(res.error){ msgDiv.textContent = res.error; render(); }
-        else { await syncCareerStatsOnLogin(); render(); }
+        else { await syncCareerStatsOnLogin(); await syncPointsOnLogin(); render(); }
       };
       const signupBtn = el('button','btn small secondary','Sign Up');
       signupBtn.onclick = async ()=>{
         msgDiv.textContent = 'Signing up\u2026';
         const res = await signupPlayer(nameInput.value.trim(), pinInput.value.trim());
         if(res.error){ msgDiv.textContent = res.error; render(); }
-        else { await syncCareerStatsOnLogin(); render(); }
+        else { await syncCareerStatsOnLogin(); await syncPointsOnLogin(); render(); }
       };
       btnRow.appendChild(loginBtn); btnRow.appendChild(signupBtn);
       wrap.appendChild(btnRow);
@@ -6974,10 +6974,12 @@ function archiveCompletedSeason(scope){
 // stats, even though it reuses the same localStorage-based persistence style.
 //
 // "Per account": CURRENT_PLAYER.id if logged in (the same identity online multiplayer already keys
-// games to), or a fixed local bucket if playing without ever logging in. There's no server-side wallet
-// yet, so this stays localStorage-only for now — if the store needs points to follow an account across
-// devices later, awardPoints()/getPointsBalance() are the only two functions that would need to start
-// talking to Supabase instead, since nothing else ever touches localStorage directly for this.
+// games to), or a fixed local bucket if playing without ever logging in — a different login, or no
+// login at all, is a genuinely different bucket with its own separate balance, never mixed together.
+// localStorage stays the fast, always-available local cache for every read during actual gameplay;
+// Supabase (once logged in) is what makes the SAME balance follow that login across devices, the
+// exact same two-layer pattern already used for career stats above (pull-merge-push on login, push
+// after every local change) — see pushPointsToCloud/pullPointsFromCloud/syncPointsOnLogin.
 const POINTS_STORAGE_PREFIX = 'diamondchart:points';
 function pointsAccountKey(){ return (CURRENT_PLAYER && CURRENT_PLAYER.id) ? `player:${CURRENT_PLAYER.id}` : 'local'; }
 function pointsStorageKey(){ return `${POINTS_STORAGE_PREFIX}:${pointsAccountKey()}`; }
@@ -6988,11 +6990,52 @@ function getPointsBalance(){
   } catch(e){}
   return 0;
 }
+function setPointsBalanceLocal(balance){
+  try{ localStorage.setItem(pointsStorageKey(), JSON.stringify({ balance })); } catch(e){}
+}
 function awardPoints(amount){
   if(!amount || amount<=0) return;
-  try{ localStorage.setItem(pointsStorageKey(), JSON.stringify({ balance: getPointsBalance() + amount })); }
-  catch(e){}
+  setPointsBalanceLocal(getPointsBalance() + amount);
+  pushPointsToCloud(); // fire-and-forget — never blocks or delays the actual game
   // Deliberately no render() — there's no store UI yet for this to show up in.
+}
+// Requires a one-time Supabase migration to add the table this reads/writes — see the SQL comment
+// right above syncPointsOnLogin below.
+async function pushPointsToCloud(){
+  if(!SUPA || !CURRENT_PLAYER) return; // nothing to sync to while playing locally/logged out
+  try{
+    await SUPA.from('player_points').upsert({
+      player_id: CURRENT_PLAYER.id, balance: getPointsBalance(), updated_at: new Date().toISOString(),
+    });
+  } catch(e){ console.error('Points cloud push failed:', e); }
+}
+async function pullPointsFromCloud(){
+  if(!SUPA || !CURRENT_PLAYER) return;
+  try{
+    const { data, error } = await SUPA.from('player_points').select('balance')
+      .eq('player_id', CURRENT_PLAYER.id).maybeSingle();
+    if(error || !data) return;
+    // Take whichever side is higher rather than overwriting outright — protects against ever losing
+    // points to a sync race (e.g. played a few offline games on this device before this login synced
+    // for the first time). The one edge case this doesn't handle perfectly is genuinely separate
+    // offline play on two different devices between syncs, which nets out to "credited once, not
+    // twice" rather than losing anything — a reasonable trade-off for how rarely that'll happen.
+    const local = getPointsBalance();
+    if(data.balance > local) setPointsBalanceLocal(data.balance);
+  } catch(e){ console.error('Points cloud pull failed:', e); }
+}
+// SQL to run once in the Supabase project (matches the existing career_stats table's shape/spirit):
+//   create table player_points (
+//     player_id uuid primary key references players(id) on delete cascade,
+//     balance integer not null default 0,
+//     updated_at timestamptz not null default now()
+//   );
+// Call this once right after a successful login/signup (same moment syncCareerStatsOnLogin already
+// runs) — pulls whatever's already in the cloud, merges with local, then immediately pushes the
+// merged (now-authoritative) balance back up so the cloud and this device agree.
+async function syncPointsOnLogin(){
+  await pullPointsFromCloud();
+  await pushPointsToCloud();
 }
 
 // Point values exactly as specified. Local and Online Draft Season are two entirely separate tables
@@ -11607,7 +11650,7 @@ function renderGameOverOverlay(){
 
 SUPA = initSupabase();
 CURRENT_PLAYER = loadStoredPlayer();
-if(SUPA && CURRENT_PLAYER){ syncCareerStatsOnLogin(); } // fire-and-forget on load; UI doesn't block on this
+if(SUPA && CURRENT_PLAYER){ syncCareerStatsOnLogin(); syncPointsOnLogin(); } // fire-and-forget on load; UI doesn't block on this
 render();
 </script>
 </body>
