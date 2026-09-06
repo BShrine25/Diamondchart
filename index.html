@@ -9651,14 +9651,15 @@ function renderGame(){
   // unforced-runner, the swing result itself, all their sub-stages) keeps showing the batter who
   // actually had that plate appearance — not whoever the lineup has already advanced to internally —
   // so the card up top never jumps ahead of what the play-by-play below is still describing. Only
-  // once a fresh at-bat genuinely begins (defense-choice / offense-choice / pitch-thrown /
-  // swing-rolling — no result to hold onto yet) does this show the batter who's actually next up.
+  // once a fresh at-bat genuinely begins (defense-choice / offense-choice / pitch-rolling /
+  // pitch-thrown / swing-rolling — no result to hold onto yet) does this show the batter who's
+  // actually next up.
   // Steals are the one exception in the OTHER direction: a steal attempt can happen mid-at-bat,
   // before the CURRENT batter has had any plate appearance to resolve at all — lastResolved at that
   // point would still be pointing at whoever's PREVIOUS at-bat concluded, showing the wrong batter
   // entirely (the person actually standing at the plate right now, mid-count, gets bumped off their
   // own card by whoever hit last).
-  const freshBatterStages = ['defense-choice','offense-choice','pitch-thrown','swing-rolling','steal-defense-throw','steal-rolling','steal-result','abs-challenge-offer','abs-challenge-rolling','abs-challenge-result'];
+  const freshBatterStages = ['defense-choice','offense-choice','pitch-rolling','pitch-thrown','swing-rolling','steal-defense-throw','steal-rolling','steal-result','abs-challenge-offer','abs-challenge-rolling','abs-challenge-result'];
   const stillShowingLastPA = GS.lastResolved && !freshBatterStages.includes(GS.stage);
   const displayBatter = stillShowingLastPA ? GS.lastResolved.batter : currentBatter(GS);
   vs.appendChild(renderFullCard(displayBatter, TEAMS[battingTeamKey(GS)], {isPitcher:false, onBaseBonus: GS.onBaseBonus}));
