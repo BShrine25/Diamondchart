@@ -155,7 +155,7 @@
   .simbtn{position:absolute; top:2px; right:2px; font-family:'Roboto Mono'; font-size:8px; letter-spacing:.03em; color:var(--blue); background:var(--card); border:1px solid var(--blue); border-radius:4px; padding:1px 4px; z-index:2;}
 
   .scoreboard{background:var(--tile); border-bottom:3px solid var(--red); padding:calc(10px + env(safe-area-inset-top)) 12px 10px; position:sticky; top:0; z-index:5;}
-  .sb-grid{display:flex; align-items:center; gap:8px;}
+  .sb-grid{display:flex; gap:8px;}
   .sb-table{flex:1; overflow-x:auto;}
   .sb-table table{border-collapse:collapse; width:100%;}
   .sb-table th, .sb-table td{font-family:'Roboto Mono'; font-size:10px; text-align:center; padding:2px 4px; color:#CBD5E8; min-width:16px;}
@@ -164,15 +164,16 @@
   .sb-table td.rhe{color:#fff; font-weight:700; border-left:1px solid #2A4A8C;}
   .sb-table tr.away td.team, .sb-table tr.home td.team{color:#fff; font-weight:700; text-align:left; font-family:'Inter'; font-size:11px; padding-right:6px;}
   .sb-table tr.active td.team{color:var(--amber);}
-  .sb-side{flex-shrink:0; text-align:center; width:84px;}
-  .diamond{width:56px;height:56px;position:relative;transform:rotate(45deg); margin:0 auto;}
-  .base{position:absolute;width:15px;height:15px;border:2px solid #5A72A8;background:transparent;}
+  .sb-side{flex-shrink:0; text-align:center; width:84px; display:flex; flex-direction:column; align-items:center;}
+  .diamond{width:46px;height:46px;position:relative;transform:rotate(45deg); margin:6px auto 0;}
+  .base{position:absolute;width:13px;height:13px;border:2px solid #5A72A8;background:transparent;}
   .base.on{background:var(--amber); border-color:var(--amber); box-shadow:0 0 8px rgba(184,134,11,.7);}
   .b1{right:0;top:0;} .b2{left:0;top:0;} .b3{left:0;bottom:0;}
-  .sb-outs{display:flex; gap:4px; justify-content:center; margin-top:5px;}
+  .sb-outs{display:flex; gap:4px; justify-content:center; margin-top:4px;}
   .outdot{width:8px;height:8px;border-radius:50%;border:1px solid var(--red);background:transparent;}
   .outdot.on{background:var(--red);}
   .sb-tap-hint{font-family:'Roboto Mono'; font-size:8.5px; color:#7F93C4; text-align:center; margin-top:4px; letter-spacing:.04em;}
+  .exit-row-bottom{text-align:center; margin:18px 0 4px;}
 
   .matchup{padding:16px;}
   .vscard{display:flex; flex-direction:row; gap:8px; align-items:stretch;}
@@ -243,7 +244,6 @@
   .gameover .display{font-size:44px; color:var(--amber); text-transform:uppercase; line-height:1;}
   .gameover .fscore{font-family:'Roboto Mono'; font-size:22px; margin:10px 0 24px; color:#fff;}
 
-  .sb-actions-row{display:flex; justify-content:space-between; align-items:center; margin-top:8px;}
   .matbtn{background:rgba(255,255,255,.15); border:1px solid rgba(255,255,255,.35); color:#fff; border-radius:7px; padding:6px 10px; font-family:'Roboto Mono'; font-size:11px; letter-spacing:.04em; white-space:nowrap;}
   .ffrow{display:flex; flex-direction:column; gap:5px; margin-top:5px;}
   .ffrow-bottom{flex-direction:row; justify-content:center; gap:8px; margin:14px 0 6px;}
@@ -9633,35 +9633,12 @@ function renderGame(){
         <div class="sb-tap-hint" style="margin-top:3px;">${GS.half==='top'?'TOP':'BOT'} ${GS.inning}</div>
       </div>
     </div>
-    <div class="sb-actions-row"></div>
     <div class="sb-tap-hint">Tap for box score</div>`;
   sb.onclick = (e)=>{ if(e.target.closest('.matbtn')||e.target.closest('.ffbtn')) return; BOX_VIEW=true; render(); };
   const matBtn = el('button','matbtn','Lineups');
+  matBtn.style.marginTop = 'auto';
   matBtn.onclick = (e)=>{ e.stopPropagation(); MAT_VIEW=true; render(); };
-  sb.querySelector('.sb-actions-row').appendChild(matBtn);
-  // Manual escape hatch: if the game ever gets stuck (no button responding, nothing to click), this
-  // is always available so a restart is never required. If the score already shows a clear winner,
-  // offers to save that result the same way a normal finish would — since a stuck game is usually one
-  // that had already effectively ended, just without the overlay correctly appearing.
-  const exitBtn = el('button','matbtn','Exit');
-  exitBtn.onclick = (e)=>{
-    e.stopPropagation();
-    const impliedWinner = GS.score.away!==GS.score.home ? (GS.score.away>GS.score.home?'away':'home') : null;
-    const inTrackedContext = SEASON_GAME_IDX!==null || PLAYOFF_MATCH_REF!==null || TOURNEY_MATCH_REF!==null;
-    const message = impliedWinner
-      ? `Leave this game? Score is ${TEAMS.away.nick} ${GS.score.away} \u2013 ${GS.score.home} ${TEAMS.home.nick}.${inTrackedContext ? ' This result will be saved.' : ''}`
-      : `Leave this game without finishing? Progress won\u2019t be saved.`;
-    CONFIRM_STATE = { message, onConfirm: ()=>{
-      if(impliedWinner && SEASON_GAME_IDX!==null){ recordSeasonResult(SEASON_GAME_IDX, GS.score.away, GS.score.home); clearFinishedOnlineSeasonMatchup(); SEASON_GAME_IDX=null; SCREEN='seasonhub'; }
-      else if(impliedWinner && PLAYOFF_MATCH_REF!==null){ recordPlayoffResult(PLAYOFF_MATCH_REF.roundIdx, PLAYOFF_MATCH_REF.matchIdx, PLAYOFF_MATCH_REF.homeIdx, PLAYOFF_MATCH_REF.awayIdx, GS.score.home, GS.score.away); clearFinishedOnlineSeasonMatchup(); PLAYOFF_MATCH_REF=null; SCREEN='playoffs'; }
-      else if(impliedWinner && TOURNEY_MATCH_REF!==null){ recordTourneyResult(TOURNEY_MATCH_REF, TOURNEY_MATCH_FLIPPED?GS.score.home:GS.score.away, TOURNEY_MATCH_FLIPPED?GS.score.away:GS.score.home); TOURNEY_MATCH_REF=null; TOURNEY_MATCH_FLIPPED=false; SCREEN='tournament'; }
-      else if(ONLINE_GAME){ leaveOnlineGame(); SCREEN='menu'; }
-      else { SCREEN='menu'; }
-      render();
-    }};
-    render();
-  };
-  sb.querySelector('.sb-actions-row').appendChild(exitBtn);
+  sb.querySelector('.sb-side').appendChild(matBtn);
   root.appendChild(sb);
 
   const m = el('div','matchup');
@@ -9696,6 +9673,32 @@ function renderGame(){
   const ffGame = el('button','matbtn ffbtn','Sim Game'); ffGame.onclick=(e)=>{ e.stopPropagation(); ffWholeGame(); };
   ffRow.appendChild(ffHalf); ffRow.appendChild(ffFull); ffRow.appendChild(ffGame);
   m.appendChild(ffRow);
+
+  // Manual escape hatch: if the game ever gets stuck (no button responding, nothing to click), this
+  // is always available so a restart is never required. If the score already shows a clear winner,
+  // offers to save that result the same way a normal finish would — since a stuck game is usually one
+  // that had already effectively ended, just without the overlay correctly appearing.
+  const exitRow = el('div','exit-row-bottom');
+  const exitBtn = el('button','btn','Exit');
+  exitBtn.onclick = (e)=>{
+    e.stopPropagation();
+    const impliedWinner = GS.score.away!==GS.score.home ? (GS.score.away>GS.score.home?'away':'home') : null;
+    const inTrackedContext = SEASON_GAME_IDX!==null || PLAYOFF_MATCH_REF!==null || TOURNEY_MATCH_REF!==null;
+    const message = impliedWinner
+      ? `Leave this game? Score is ${TEAMS.away.nick} ${GS.score.away} \u2013 ${GS.score.home} ${TEAMS.home.nick}.${inTrackedContext ? ' This result will be saved.' : ''}`
+      : `Leave this game without finishing? Progress won\u2019t be saved.`;
+    CONFIRM_STATE = { message, onConfirm: ()=>{
+      if(impliedWinner && SEASON_GAME_IDX!==null){ recordSeasonResult(SEASON_GAME_IDX, GS.score.away, GS.score.home); clearFinishedOnlineSeasonMatchup(); SEASON_GAME_IDX=null; SCREEN='seasonhub'; }
+      else if(impliedWinner && PLAYOFF_MATCH_REF!==null){ recordPlayoffResult(PLAYOFF_MATCH_REF.roundIdx, PLAYOFF_MATCH_REF.matchIdx, PLAYOFF_MATCH_REF.homeIdx, PLAYOFF_MATCH_REF.awayIdx, GS.score.home, GS.score.away); clearFinishedOnlineSeasonMatchup(); PLAYOFF_MATCH_REF=null; SCREEN='playoffs'; }
+      else if(impliedWinner && TOURNEY_MATCH_REF!==null){ recordTourneyResult(TOURNEY_MATCH_REF, TOURNEY_MATCH_FLIPPED?GS.score.home:GS.score.away, TOURNEY_MATCH_FLIPPED?GS.score.away:GS.score.home); TOURNEY_MATCH_REF=null; TOURNEY_MATCH_FLIPPED=false; SCREEN='tournament'; }
+      else if(ONLINE_GAME){ leaveOnlineGame(); SCREEN='menu'; }
+      else { SCREEN='menu'; }
+      render();
+    }};
+    render();
+  };
+  exitRow.appendChild(exitBtn);
+  m.appendChild(exitRow);
 
   root.appendChild(m);
   if(GS.handoff && !GS.gameOver){ renderHandoffOverlay(); }
