@@ -1,0 +1,32 @@
+name: Delete old PNG cards
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_delete:
+        description: 'Type YES to actually delete (leave blank to just preview)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preview what would be deleted (case-insensitive)
+        run: |
+          echo "Files found at repo root (any case of .png):"
+          find . -maxdepth 1 -iname "*.png" | wc -l
+          find . -maxdepth 1 -iname "*.png"
+      - name: Delete PNGs (only if confirmed)
+        if: ${{ github.event.inputs.confirm_delete == 'YES' }}
+        run: |
+          find . -maxdepth 1 -iname "*.png" -delete
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add -A
+          git commit -m "Remove old oversized PNG cards" || echo "nothing to commit"
+          git checkout -B main
+          git push origin main
