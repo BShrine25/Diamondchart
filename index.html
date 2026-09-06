@@ -154,7 +154,7 @@
   .matchbox{position:relative;}
   .simbtn{position:absolute; top:2px; right:2px; font-family:'Roboto Mono'; font-size:8px; letter-spacing:.03em; color:var(--blue); background:var(--card); border:1px solid var(--blue); border-radius:4px; padding:1px 4px; z-index:2;}
 
-  .scoreboard{background:var(--tile); border-bottom:3px solid var(--red); padding:10px 12px; position:sticky; top:0; z-index:5;}
+  .scoreboard{background:var(--tile); border-bottom:3px solid var(--red); padding:calc(10px + env(safe-area-inset-top)) 12px 10px; position:sticky; top:0; z-index:5;}
   .sb-grid{display:flex; align-items:center; gap:8px;}
   .sb-table{flex:1; overflow-x:auto;}
   .sb-table table{border-collapse:collapse; width:100%;}
@@ -243,7 +243,8 @@
   .gameover .display{font-size:44px; color:var(--amber); text-transform:uppercase; line-height:1;}
   .gameover .fscore{font-family:'Roboto Mono'; font-size:22px; margin:10px 0 24px; color:#fff;}
 
-  .matbtn{display:block; margin:8px auto 0; background:rgba(255,255,255,.15); border:1px solid rgba(255,255,255,.35); color:#fff; border-radius:7px; padding:6px 10px; font-family:'Roboto Mono'; font-size:11px; letter-spacing:.04em; white-space:nowrap;}
+  .sb-actions-row{display:flex; justify-content:space-between; align-items:center; margin-top:8px;}
+  .matbtn{background:rgba(255,255,255,.15); border:1px solid rgba(255,255,255,.35); color:#fff; border-radius:7px; padding:6px 10px; font-family:'Roboto Mono'; font-size:11px; letter-spacing:.04em; white-space:nowrap;}
   .ffrow{display:flex; flex-direction:column; gap:5px; margin-top:5px;}
   .ffrow-bottom{flex-direction:row; justify-content:center; gap:8px; margin:14px 0 6px;}
   .ffrow-bottom .ffbtn{flex:1; max-width:160px; margin:0; font-size:11px; padding:8px 6px; background:var(--card); border:1.5px solid var(--blue); color:var(--blue); opacity:1;}
@@ -9632,16 +9633,17 @@ function renderGame(){
         <div class="sb-tap-hint" style="margin-top:3px;">${GS.half==='top'?'TOP':'BOT'} ${GS.inning}</div>
       </div>
     </div>
+    <div class="sb-actions-row"></div>
     <div class="sb-tap-hint">Tap for box score</div>`;
   sb.onclick = (e)=>{ if(e.target.closest('.matbtn')||e.target.closest('.ffbtn')) return; BOX_VIEW=true; render(); };
   const matBtn = el('button','matbtn','Lineups');
   matBtn.onclick = (e)=>{ e.stopPropagation(); MAT_VIEW=true; render(); };
-  sb.querySelector('.sb-side').appendChild(matBtn);
+  sb.querySelector('.sb-actions-row').appendChild(matBtn);
   // Manual escape hatch: if the game ever gets stuck (no button responding, nothing to click), this
   // is always available so a restart is never required. If the score already shows a clear winner,
   // offers to save that result the same way a normal finish would — since a stuck game is usually one
   // that had already effectively ended, just without the overlay correctly appearing.
-  const exitBtn = el('button','matbtn','Exit'); exitBtn.style.marginLeft='6px';
+  const exitBtn = el('button','matbtn','Exit');
   exitBtn.onclick = (e)=>{
     e.stopPropagation();
     const impliedWinner = GS.score.away!==GS.score.home ? (GS.score.away>GS.score.home?'away':'home') : null;
@@ -9659,7 +9661,7 @@ function renderGame(){
     }};
     render();
   };
-  sb.querySelector('.sb-side').appendChild(exitBtn);
+  sb.querySelector('.sb-actions-row').appendChild(exitBtn);
   root.appendChild(sb);
 
   const m = el('div','matchup');
