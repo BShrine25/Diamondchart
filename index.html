@@ -154,7 +154,7 @@
   .matchbox{position:relative;}
   .simbtn{position:absolute; top:2px; right:2px; font-family:'Roboto Mono'; font-size:8px; letter-spacing:.03em; color:var(--blue); background:var(--card); border:1px solid var(--blue); border-radius:4px; padding:1px 4px; z-index:2;}
 
-  .scoreboard{background:var(--tile); border-bottom:3px solid var(--red); padding:calc(10px + env(safe-area-inset-top)) 12px 10px; position:sticky; top:0; z-index:5;}
+  .scoreboard{background:var(--tile); border-bottom:3px solid var(--red); padding:calc(14px + env(safe-area-inset-top)) 12px 8px; position:sticky; top:0; z-index:5;}
   .sb-grid{display:flex; gap:8px;}
   .sb-table{flex:1; overflow-x:auto;}
   .sb-table table{border-collapse:collapse; width:100%;}
@@ -173,6 +173,8 @@
   .outdot{width:8px;height:8px;border-radius:50%;border:1px solid var(--red);background:transparent;}
   .outdot.on{background:var(--red);}
   .sb-tap-hint{font-family:'Roboto Mono'; font-size:8.5px; color:#7F93C4; text-align:center; margin-top:4px; letter-spacing:.04em;}
+  .sb-bottom-row{display:flex; justify-content:space-between; align-items:center; margin-top:6px;}
+  .sb-bottom-row .sb-tap-hint{margin-top:0; text-align:left;}
   .exit-row-bottom{text-align:center; margin:18px 0 4px;}
 
   .matchup{padding:16px;}
@@ -9633,12 +9635,13 @@ function renderGame(){
         <div class="sb-tap-hint" style="margin-top:3px;">${GS.half==='top'?'TOP':'BOT'} ${GS.inning}</div>
       </div>
     </div>
-    <div class="sb-tap-hint">Tap for box score</div>`;
+    <div class="sb-bottom-row">
+      <div class="sb-tap-hint">Tap for box score</div>
+    </div>`;
   sb.onclick = (e)=>{ if(e.target.closest('.matbtn')||e.target.closest('.ffbtn')) return; BOX_VIEW=true; render(); };
   const matBtn = el('button','matbtn','Lineups');
-  matBtn.style.marginTop = 'auto';
   matBtn.onclick = (e)=>{ e.stopPropagation(); MAT_VIEW=true; render(); };
-  sb.querySelector('.sb-side').appendChild(matBtn);
+  sb.querySelector('.sb-bottom-row').appendChild(matBtn);
   root.appendChild(sb);
 
   const m = el('div','matchup');
