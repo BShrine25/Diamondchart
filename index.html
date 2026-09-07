@@ -9808,7 +9808,10 @@ function renderGame(){
   // current play's result has been fully shown and acknowledged (via Continue, or CPU auto-advance) —
   // so gating on that stage specifically means the overlay can't appear until the person has actually
   // seen the play that ended the game.
-  if(GS.gameOver && GS.stage==='defense-choice'){ renderGameOverOverlay(); }
+  if(GS.gameOver && GS.stage==='defense-choice'){
+    autoRecordGameResultOnceOver();
+    renderGameOverOverlay();
+  }
 
   const sb = el('div','scoreboard');
   sb.style.position='relative';
@@ -12606,6 +12609,17 @@ function currentGameStarter(teamKey){
   return `${p.name} (${outs} outs recorded)`;
 }
 
+// Persists the result the moment the game actually ends — completely independent of whether the user
+// ever clicks the "Save & Return" button on the overlay below. Someone who just glances at the final
+// score and closes the app should never lose that result; the button that follows is for navigating
+// back to the standings/bracket, not for whether the data gets saved at all. Safe to call on every
+// single render() while this overlay is up: recordSeasonResult/recordPlayoffResult both already check
+// g.played internally and do nothing on a repeat call, so this never double-records anything.
+function autoRecordGameResultOnceOver(){
+  if(SEASON_GAME_IDX!==null){ recordSeasonResult(SEASON_GAME_IDX, GS.score.away, GS.score.home); }
+  else if(PLAYOFF_MATCH_REF!==null){ recordPlayoffResult(PLAYOFF_MATCH_REF.roundIdx, PLAYOFF_MATCH_REF.matchIdx, PLAYOFF_MATCH_REF.homeIdx, PLAYOFF_MATCH_REF.awayIdx, GS.score.home, GS.score.away); }
+  else if(TOURNEY_MATCH_REF!==null){ recordTourneyResult(TOURNEY_MATCH_REF, TOURNEY_MATCH_FLIPPED?GS.score.home:GS.score.away, TOURNEY_MATCH_FLIPPED?GS.score.away:GS.score.home); }
+}
 function renderGameOverOverlay(){
   const ov = el('div','gameover');
   const winnerName = GS.winner==='away' ? TEAMS.away.nick : TEAMS.home.nick;
