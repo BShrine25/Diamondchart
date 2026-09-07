@@ -4183,7 +4183,7 @@ const SEA_PITCHERS = [
 const TEAM_POOL = {
   rays: buildRosterFromPool("Tampa Bay","Rays",{battery:3, infield:3, outfield:3}, TB_BATTERS, TB_PITCHERS, "#092C5C", "TB"),
   bluejays: buildRosterFromPool("Toronto","Blue Jays",{battery:3, infield:3, outfield:3}, TOR_BATTERS, TOR_PITCHERS, "#134A8E", "TOR"),
-  twins: buildRosterFromPool("Minneapolis","Twins",{battery:3, infield:3, outfield:3}, MIN_BATTERS, MIN_PITCHERS, "#002B5C", "MIN"),
+  twins: buildRosterFromPool("Minnesota","Twins",{battery:3, infield:3, outfield:3}, MIN_BATTERS, MIN_PITCHERS, "#002B5C", "MIN"),
   tigers: buildRosterFromPool("Detroit","Tigers",{battery:3, infield:3, outfield:3}, TIG_BATTERS, TIG_PITCHERS, "#0C2340", "DET"),
   whitesox: buildRosterFromPool("Chicago","White Sox",{battery:3, infield:3, outfield:3}, CHW_BATTERS, CHW_PITCHERS, "#000000", "CHW"),
   royals: buildRosterFromPool("Kansas City","Royals",{battery:3, infield:3, outfield:3}, KC_BATTERS, KC_PITCHERS, "#004687", "KC"),
@@ -7008,8 +7008,51 @@ function activeSeasonStorageKey(scope){ return `${STATS_STORAGE_PREFIX}:${points
 function resumeOrStartSeason(scope, freshSetupScreen){
   if(SEASON && SEASON.teams && SEASON.statsScope===scope){ SCREEN='seasonhub'; return; }
   const saved = loadActiveSeason(scope);
-  if(saved && saved.teams){ SEASON = saved; SCREEN='seasonhub'; }
+  if(saved && saved.teams){
+    SEASON = saved;
+    SCREEN='seasonhub';
+    // A manually-saved in-progress game (see saveGameState) is separate from the season save itself —
+    // the season only auto-saves between games, so this is what actually recovers a game that was
+    // still live when the app closed, rather than just landing back on the season hub with that one
+    // game unplayed.
+    const savedGame = loadGameState(scope);
+    if(savedGame){
+      GS = savedGame.gs;
+      GS.pitcherRemoved = { away: new Set(savedGame.gs.pitcherRemoved.away), home: new Set(savedGame.gs.pitcherRemoved.home) };
+      TEAMS = savedGame.teams;
+      SEASON_GAME_IDX = savedGame.seasonGameIdx;
+      PLAYOFF_MATCH_REF = savedGame.playoffMatchRef;
+      SCREEN = 'game';
+    }
+  }
   else { SCREEN = freshSetupScreen; }
+}
+function gameStorageKey(scope){ return `${STATS_STORAGE_PREFIX}:${pointsAccountKey()}:${scope}:activeGame`; }
+// Manual mid-game save/restore — distinct from the automatic between-games season save above, which
+// can't help with a game that was still live when the app closed. Sets don't survive JSON (same issue
+// solved for online sync in pushOnlineGameState/applyRemoteGameState) — pitcherRemoved is converted to
+// plain arrays going out and back into real Sets coming back in, exactly the same way.
+function saveGameState(){
+  if(!SEASON || !GS) return;
+  const scope = SEASON.statsScope;
+  const wireGS = Object.assign({}, GS, {
+    pitcherRemoved: { away: Array.from(GS.pitcherRemoved.away), home: Array.from(GS.pitcherRemoved.home) },
+  });
+  try{
+    localStorage.setItem(gameStorageKey(scope), JSON.stringify({
+      gs: wireGS, teams: TEAMS, seasonGameIdx: SEASON_GAME_IDX, playoffMatchRef: PLAYOFF_MATCH_REF,
+    }));
+  } catch(e){}
+}
+function loadGameState(scope){
+  try{
+    const raw = localStorage.getItem(gameStorageKey(scope));
+    if(raw) return JSON.parse(raw);
+  } catch(e){}
+  return null;
+}
+function clearGameState(scope){
+  try{ localStorage.removeItem(gameStorageKey(scope)); } catch(e){}
 }
 function loadCareerStats(scope){
   try{
@@ -7485,6 +7528,7 @@ function determineSavePitcher(gs, winnerKey, winningPitcher){
 function recordSeasonResult(idx, awayScore, homeScore){
   const g = SEASON.schedule.find(x=>x.idx===idx);
   if(!g || g.played) return;
+  clearGameState(SEASON.statsScope);
   recordPitcherRestDebt(GS, g.awayIdx, g.homeIdx);
   recordBenchMandatoryPlay(GS, g.awayIdx, g.homeIdx);
   accumulateGameStats(GS, g.awayIdx, g.homeIdx, false);
@@ -8012,7 +8056,7 @@ function renderSeasonHub(){
   }
 
   const resetBtn = el('button','btn secondary','Reset Season'); resetBtn.style.marginTop='18px';
-  resetBtn.onclick = ()=>{ showConfirm('Reset the season? This clears the schedule, standings, and drafted teams — cannot be undone.', ()=>{ SEASON=null; SEASON_GAME_IDX=null; PLAYOFF_MATCH_REF=null; SCREEN='menu'; render(); }); };
+  resetBtn.onclick = ()=>{ showConfirm('Reset the season? This clears the schedule, standings, and drafted teams — cannot be undone.', ()=>{ const scope=SEASON&&SEASON.statsScope; if(scope) clearActiveSeason(scope); SEASON=null; SEASON_GAME_IDX=null; PLAYOFF_MATCH_REF=null; SCREEN='menu'; render(); }); };
   wrap.appendChild(resetBtn);
 
   root.appendChild(wrap);
@@ -8403,6 +8447,7 @@ function refreshPlayoffs(bracket){
 function recordPlayoffResult(roundIdx, matchIdx, homeIdx, awayIdx, homeScore, awayScore){
   const bracket = SEASON.playoffs;
   const m = bracket.rounds[roundIdx].matches[matchIdx];
+  clearGameState(SEASON.statsScope);
   // Pitcher rest (4.4) applies in the postseason too — must run before this game gets pushed into the
   // match history, since teamGamesPlayedSoFar needs the "before today's game" count. No bench
   // mandatory-play call here: "no roster restrictions for playoffs."
@@ -9823,6 +9868,17 @@ function renderGame(){
   // offers to save that result the same way a normal finish would — since a stuck game is usually one
   // that had already effectively ended, just without the overlay correctly appearing.
   const exitRow = el('div','exit-row-bottom');
+  if(typeof SEASON!=='undefined' && SEASON && !GS.gameOver){
+    const saveBtn = el('button','btn small secondary','Save Game'); saveBtn.style.marginBottom='8px'; saveBtn.style.display='block'; saveBtn.style.marginLeft='auto'; saveBtn.style.marginRight='auto';
+    saveBtn.onclick = (e)=>{
+      e.stopPropagation();
+      saveGameState();
+      const original = saveBtn.textContent;
+      saveBtn.textContent = 'Saved!';
+      setTimeout(()=>{ saveBtn.textContent = original; }, 1200);
+    };
+    exitRow.appendChild(saveBtn);
+  }
   const exitBtn = el('button','btn','Exit');
   exitBtn.onclick = (e)=>{
     e.stopPropagation();
@@ -10502,7 +10558,7 @@ function renderHitRunFBSend3rdChoice(m){
   }
 }
 function beginHitRunFBThrow(){
-  const firstCand = { runnerName: GS.bases[0], fromIdx:0, toBase:'2nd' };
+  const firstCand = { runnerName: GS.bases[0], fromIdx:0, toBase:'1st' };
   if(GS.hitRunFB.sendThird){
     GS.hitRunFB.candidates = [firstCand, { runnerName: GS.bases[2], fromIdx:2, toBase:'home' }];
     GS.stage = 'hitrun-fb-defense-pick';
@@ -10517,7 +10573,7 @@ function renderHitRunFBDefenseThrow(m){
   const cand = GS.hitRunFB.candidates[0];
   const {defValue, offValue, bonusLabel} = hitRunFBMatchup(cand);
   const dz = el('div','decision');
-  dz.innerHTML = `<div class="lbl">${cand.runnerName} Trying for 2nd \u2014 Defense Throws</div>
+  dz.innerHTML = `<div class="lbl">${cand.runnerName} Scrambling Back to 1st \u2014 Defense Throws</div>
     <div class="rulesnote">Outfield Defense: <b>${defValue}</b> vs Speed: <b>${offValue}</b>${bonusLabel}</div>`;
   m.appendChild(dz);
   const doThrow = ()=>resolveHitRunFBContest(cand, []);
@@ -10538,7 +10594,7 @@ function renderHitRunFBDefensePick(m){
   if(isHumanControls(fk)){
     const row = el('div','btnrow');
     candidates.forEach(cand=>{
-      const label = cand.toBase==='home' ? `Throw Home (vs ${cand.runnerName})` : `Throw to 2nd (vs ${cand.runnerName})`;
+      const label = cand.toBase==='home' ? `Throw Home (vs ${cand.runnerName})` : `Throw to ${cand.toBase} (vs ${cand.runnerName})`;
       const btn = el('button','btn small blueline', label);
       btn.onclick = ()=>pick(cand);
       row.appendChild(btn);
@@ -10565,7 +10621,7 @@ function resolveHitRunFBContest(contested, autoSafeOthers){
       // is specifically what ends the inning — a normal tag-up's own "wasThirdOut" doesn't have this
       // extra wrinkle, so it isn't reused here.
       isThirdOutFromFirst = (contested.fromIdx===0 && GS.outs>=3);
-      bannerText = contested.toBase==='home' ? `${contested.runnerName} thrown out at the plate!` : `${contested.runnerName} thrown out advancing!`;
+      bannerText = contested.toBase==='home' ? `${contested.runnerName} thrown out at the plate!` : `${contested.runnerName} thrown out, doubled off!`;
       bannerClass = 'out';
     } else if(contested.toBase==='home'){
       runsIn+=1; addRuns(GS, tk, 1);
@@ -10573,8 +10629,8 @@ function resolveHitRunFBContest(contested, autoSafeOthers){
       creditRunsEarned(GS, fk, pitcherName, [contested.runnerName]);
       bannerText = `${contested.runnerName} scores!`; bannerClass = 'hit';
     } else {
-      bases[1] = contested.runnerName;
-      bannerText = `${contested.runnerName} safe at 2nd!`; bannerClass = 'hit';
+      bases[0] = contested.runnerName;
+      bannerText = `${contested.runnerName} makes it back to 1st safely!`; bannerClass = 'hit';
     }
     let otherText = '';
     autoSafeOthers.forEach(c=>{
@@ -10585,8 +10641,8 @@ function resolveHitRunFBContest(contested, autoSafeOthers){
         creditRunsEarned(GS, fk, pitcherName, [c.runnerName]);
         otherText += ` ${c.runnerName} scores untouched on the same play!`;
       } else {
-        bases[1] = c.runnerName;
-        otherText += ` ${c.runnerName} advances untouched on the same play!`;
+        bases[0] = c.runnerName;
+        otherText += ` ${c.runnerName} makes it back to 1st untouched on the same play!`;
       }
     });
     GS.bases = bases;
@@ -11459,12 +11515,29 @@ function initiateInfieldInGB(sent){
 // on 1st is trying for 2nd; (+3) to the RUNNER's speed specifically when a runner on 3rd is trying
 // for home. A runner on 2nd trying for 3rd gets no bonus either way. No 2-outs bonus exists for fly
 // balls (that's a GB-extra-base-only rule, 3.12.B) — outs<2 is already guaranteed by classifyOutcome.
+// Ordered from CLOSEST to home outward — 3rd/home first, then 2nd/3rd, then 1st/2nd. This order is
+// what makes the dependency check below possible: candidate[i]'s target base is always exactly
+// candidate[i-1]'s origin, so by the time a trailing runner would be asked, we already know for
+// certain whether the runner ahead of them actually vacated that spot.
 function buildTagUpCandidates(gs){
   const candidates = [];
-  if(gs.bases[0]) candidates.push({ runnerName: gs.bases[0], fromIdx:0, toBase:'2nd' });
-  if(gs.bases[1]) candidates.push({ runnerName: gs.bases[1], fromIdx:1, toBase:'3rd' });
   if(gs.bases[2]) candidates.push({ runnerName: gs.bases[2], fromIdx:2, toBase:'home' });
+  if(gs.bases[1]) candidates.push({ runnerName: gs.bases[1], fromIdx:1, toBase:'3rd' });
+  if(gs.bases[0]) candidates.push({ runnerName: gs.bases[0], fromIdx:0, toBase:'2nd' });
   return candidates;
+}
+// A trailing runner's target base is only actually open if the runner who was there ahead of them
+// just got sent. Searches for whoever actually occupied the target base (if anyone did) rather than
+// assuming it's always the previous array entry — bases aren't always consecutively occupied (1st and
+// 3rd, with 2nd empty, is a real case), so the "immediately prior candidate" isn't always the right
+// runner to check.
+function tagUpStepBlocked(tu, step){
+  const cand = tu.candidates[step];
+  if(cand.toBase==='home') return false; // scoring is never blocked by another runner
+  const targetIdx = cand.toBase==='3rd' ? 2 : 1;
+  const blockerStep = tu.candidates.findIndex(c=>c.fromIdx===targetIdx);
+  if(blockerStep===-1 || blockerStep>=step) return false; // nobody was ever on the target base at all
+  return tu.sent[blockerStep]===false;
 }
 function tagUpBonusAndDefense(fk, tk, cand){
   const bonus = cand.toBase==='home' ? 3 : 0; // runner's own speed bonus, home only
@@ -11476,12 +11549,23 @@ function tagUpBonusAndDefense(fk, tk, cand){
 function beginTagUpChoice(){
   const candidates = buildTagUpCandidates(GS);
   GS.tagUp = { candidates, sent: new Array(candidates.length).fill(null), step: 0 };
+  advanceTagUpToAskableStep();
   GS.stage = 'tagup-choice';
+}
+// Auto-resolves (as "not sent", no prompt shown) every step that's blocked by the runner ahead of it
+// holding, until it reaches either a real, askable decision or runs out of candidates entirely.
+function advanceTagUpToAskableStep(){
+  const tu = GS.tagUp;
+  while(tu.step < tu.candidates.length && tagUpStepBlocked(tu, tu.step)){
+    tu.sent[tu.step] = false;
+    tu.step += 1;
+  }
 }
 function answerTagUpStep(sent){
   const tu = GS.tagUp;
   tu.sent[tu.step] = sent;
   tu.step += 1;
+  advanceTagUpToAskableStep();
   if(tu.step < tu.candidates.length){ render(); }
   else { resolveTagUpDecisions(); }
 }
