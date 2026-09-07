@@ -200,7 +200,7 @@
   .cardv3-hero2-stack{position:relative; z-index:1; display:flex; flex-direction:column; align-items:center;}
   .cardv3-hero2-name{font-family:'Teko'; font-weight:600; color:var(--red); text-transform:uppercase; letter-spacing:.02em; line-height:1.05; max-width:96%; white-space:normal; word-break:break-word; text-align:center;}
   .cardv3-warn{font-family:'Roboto Mono'; font-size:8.5px; color:var(--red); text-align:center; padding:3px 6px; border-bottom:1px solid var(--line);}
-  .fullcard-outer{display:flex; flex-direction:column;}
+  .fullcard-outer{display:flex; flex-direction:column; flex:1; min-width:0;}
   .cardv3-warn-below{border:1px solid var(--red); border-radius:6px; background:rgba(196,30,58,0.08); margin-top:4px; padding:4px 6px; font-weight:700;}
   .cardv3-results{flex:1; padding:2px 8px 6px; overflow-y:auto;}
   .cardv3-resrow{display:flex; justify-content:space-between; align-items:center; padding:3px 2px; border-bottom:1px dashed var(--line); font-family:'Roboto Mono'; font-size:10px;}
@@ -3048,6 +3048,21 @@ function buildRosterFromPool(city, nick, defense, batterPool, pitcherPool, color
     if(bench.length<benchCap){ bench.push(p); return; }
     extraBatters.push(p);
   });
+  // Guarantee a backup catcher makes the active bench, not just the highest points-ranked leftovers.
+  // Every real team keeps a second catcher on hand for an emergency (injury, ejection) regardless of
+  // whether their bat alone would otherwise crack the bench — pure points-ranking has no way to know
+  // that, so it needs to be checked and corrected for explicitly, here, after the normal fill.
+  const isCatcher = p => p.elig && p.elig.includes('C');
+  const benchHasBackupCatcher = bench.some(isCatcher) || isCatcher(dh);
+  if(!benchHasBackupCatcher){
+    const bestAvailableCatcher = extraBatters.filter(isCatcher).sort((a,b)=>b.points-a.points)[0];
+    if(bestAvailableCatcher){
+      const lowestBenchIdx = bench.reduce((lowIdx,p,i)=> p.points<bench[lowIdx].points ? i : lowIdx, 0);
+      const bumped = bench[lowestBenchIdx];
+      bench[lowestBenchIdx] = bestAvailableCatcher;
+      extraBatters.splice(extraBatters.indexOf(bestAvailableCatcher), 1, bumped);
+    }
+  }
   lineupSlots.DH = dh;
   const unorderedLineup = STARTING_POSITIONS.concat(['DH']).map(pos=>{
     const p = lineupSlots[pos];
@@ -11871,16 +11886,34 @@ function pitchingTableHTML(teamKey){
   const wls = GS.gameOver ? determineWinLossPitchers(GS) : null;
   const totals = {outs:0,H:0,R:0,ER:0,BB:0,SO:0,HR:0};
   const bfLines = [];
-  const rows = t.pitchers.map((p,i)=>{
-    if(i>0 && GS.pitcherIdx[teamKey]<i) return ''; // hasn't entered the game yet
-    const gameLine = GS.pitStats[teamKey][p.name] || initPitchLine();
+  const currentPitcherObj = t.pitchers[GS.pitcherIdx[teamKey]];
+  const currentPitcherName = currentPitcherObj ? currentPitcherObj.name : null;
+  // Who to show is decided by whether they actually recorded anything this game — not by their
+  // position in the rotation/bullpen array. That array-position approach used to miss anyone who
+  // pitched but isn't part of the normal staff at all (an emergency position-player pitcher), and
+  // could also hide an earlier reliever entirely if bullpen usage ever happened out of index order
+  // (a higher-indexed arm brought in before a lower-indexed one). Checking pitStats directly is
+  // correct regardless of who pitched or in what order. The pitcher currently on the mound is always
+  // included too, even before they've recorded their first out.
+  const participantNames = Object.keys(GS.pitStats[teamKey]).filter(name=>{
+    const line = GS.pitStats[teamKey][name];
+    return line && (line.outs>0 || line.BF>0 || line.H>0 || line.BB>0 || line.SO>0 || line.HR>0 || line.R>0);
+  });
+  if(currentPitcherName && !participantNames.includes(currentPitcherName)) participantNames.push(currentPitcherName);
+  const rosterOrder = t.pitchers.map(p=>p.name);
+  const orderedNames = participantNames.slice().sort((a,b)=>{
+    const ia = rosterOrder.indexOf(a), ib = rosterOrder.indexOf(b);
+    return (ia===-1?999:ia) - (ib===-1?999:ib); // anyone outside the normal staff sorts to the end
+  });
+  const rows = orderedNames.map(name=>{
+    const gameLine = GS.pitStats[teamKey][name] || initPitchLine();
     ['outs','H','R','ER','BB','SO','HR'].forEach(k=>{ totals[k]+=gameLine[k]||0; });
-    if(gameLine.BF) bfLines.push(`${p.name} ${gameLine.BF}`);
-    const eraSrc = inSeasonCtx ? combinedPitchLine(teamKey, p.name) : gameLine;
+    if(gameLine.BF) bfLines.push(`${name} ${gameLine.BF}`);
+    const eraSrc = inSeasonCtx ? combinedPitchLine(teamKey, name) : gameLine;
     const era = fmtERA(pitchingERA(eraSrc));
-    const isActive = GS.pitcherIdx[teamKey]===i && !GS.gameOver;
-    const record = pitcherRecordDisplay(p.name, seasonIdx, wls);
-    return `<tr><td class="team">${p.name}${record}${isActive?' *':''}</td><td>${formatIP(gameLine.outs)}</td><td>${gameLine.H}</td><td>${gameLine.R}</td><td>${gameLine.ER}</td><td>${gameLine.BB}</td><td>${gameLine.SO}</td><td>${gameLine.HR}</td><td>${era}</td></tr>`;
+    const isActive = name===currentPitcherName && !GS.gameOver;
+    const record = pitcherRecordDisplay(name, seasonIdx, wls);
+    return `<tr><td class="team">${name}${record}${isActive?' *':''}</td><td>${formatIP(gameLine.outs)}</td><td>${gameLine.H}</td><td>${gameLine.R}</td><td>${gameLine.ER}</td><td>${gameLine.BB}</td><td>${gameLine.SO}</td><td>${gameLine.HR}</td><td>${era}</td></tr>`;
   }).join('');
   const bfHTML = bfLines.length ? `<div class="boxsummary">Batters faced: ${bfLines.join(', ')}.</div>` : '';
   return `<table class="boxtable">
