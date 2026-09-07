@@ -200,6 +200,8 @@
   .cardv3-hero2-stack{position:relative; z-index:1; display:flex; flex-direction:column; align-items:center;}
   .cardv3-hero2-name{font-family:'Teko'; font-weight:600; color:var(--red); text-transform:uppercase; letter-spacing:.02em; line-height:1.05; max-width:96%; white-space:normal; word-break:break-word; text-align:center;}
   .cardv3-warn{font-family:'Roboto Mono'; font-size:8.5px; color:var(--red); text-align:center; padding:3px 6px; border-bottom:1px solid var(--line);}
+  .fullcard-outer{display:flex; flex-direction:column;}
+  .cardv3-warn-below{border:1px solid var(--red); border-radius:6px; background:rgba(196,30,58,0.08); margin-top:4px; padding:4px 6px; font-weight:700;}
   .cardv3-results{flex:1; padding:2px 8px 6px; overflow-y:auto;}
   .cardv3-resrow{display:flex; justify-content:space-between; align-items:center; padding:3px 2px; border-bottom:1px dashed var(--line); font-family:'Roboto Mono'; font-size:10px;}
   .cardv3-resrow:last-child{border-bottom:none;}
@@ -473,6 +475,14 @@ let ONLINE_SEASON_CHANNEL = null;
 
 function pushOnlineGameState(){
   if(!SUPA || !ONLINE_GAME) return;
+  // Monotonic counter, carried inside GS itself so it round-trips through the network the same way
+  // every other field does — the receiving device compares this against the highest one it's already
+  // applied (see LAST_APPLIED_SEQ in applyRemoteGameState) to reject a stale update that arrives late,
+  // rather than blindly overwriting a newer local state with an older one. This is the fix for a real
+  // reported bug: a delayed network update landing right after a game's final out, silently reverting
+  // to an earlier moment (with a pitching change the other device had queued up) and applying it as if
+  // it just happened, with no local interaction at all.
+  if(GS) GS.seq = (GS.seq||0) + 1;
   // Sets don't survive JSON serialization — Supabase stores state as jsonb, and
   // JSON.stringify(new Set(['x'])) produces "{}" with the actual contents silently gone. GS.
   // pitcherRemoved is the one Set living inside the persisted game state; converting it to a plain
@@ -489,10 +499,20 @@ function pushOnlineGameState(){
     updated_by: CURRENT_PLAYER ? CURRENT_PLAYER.id : null,
   }).eq('id', ONLINE_GAME.id).then(({error})=>{ if(error) console.error('Online push failed:', error); });
 }
+// Highest GS.seq successfully applied from the network so far this session — starts at -1 (not 0) so
+// a legitimate first-ever update carrying seq 0 is never mistaken for a stale repeat of itself.
+let LAST_APPLIED_SEQ = -1;
 // Applies a state update that arrived from the OTHER device — sets the flag first so the render()
 // this triggers doesn't turn straight around and push the same state right back out.
 function applyRemoteGameState(state){
   if(!state) return;
+  if(state.gs && state.gs.seq!=null && state.gs.seq < LAST_APPLIED_SEQ){
+    // A newer state is already applied locally — this one arrived late (out-of-order delivery) and
+    // would silently roll the game backward if applied. Drop it instead of overwriting.
+    console.warn('Ignored stale online game update (seq '+state.gs.seq+' < '+LAST_APPLIED_SEQ+')');
+    return;
+  }
+  if(state.gs && state.gs.seq!=null) LAST_APPLIED_SEQ = state.gs.seq;
   APPLYING_REMOTE_UPDATE = true;
   GS = state.gs;
   // Reverse of the wire-format conversion in pushOnlineGameState: plain arrays back into real Sets,
@@ -521,6 +541,10 @@ function applyRemoteGameState(state){
 function subscribeToOnlineGame(gameId){
   if(!SUPA) return;
   if(ONLINE_CHANNEL){ SUPA.removeChannel(ONLINE_CHANNEL); ONLINE_CHANNEL = null; }
+  // A fresh subscription means a fresh game's sequence numbers start over from 0 too — without this
+  // reset, LAST_APPLIED_SEQ carried over from a previous game played earlier this same session could
+  // wrongly reject this new game's legitimate early updates as "stale".
+  LAST_APPLIED_SEQ = -1;
   const myId = CURRENT_PLAYER ? CURRENT_PLAYER.id : null;
   const channel = SUPA.channel(`live_game:${gameId}`)
     .on('postgres_changes', { event:'UPDATE', schema:'public', table:'live_games', filter:`id=eq.${gameId}` }, (payload)=>{
@@ -4343,6 +4367,8 @@ function newGameState(mode){
     // sides have already been given their +1-per-extra-inning bonus through, so checkHalfInningOver
     // only grants it once per inning number, not once per half.
     absChallenges:{away:2, home:2},
+    absChallengeUsed:{away:false, home:false}, absChallengeAtBatBatter:null,
+    seq: 0,
     absExtraInningsGranted:9,
     absPending:null, absChallengeResult:null,
     wasSimulated:false, // hidden points system — set true the moment runSim() is ever called during this game
@@ -4559,7 +4585,11 @@ function classifyOutcome(gs, outcome){
   // or lose that throw. A runner on 3rd already has its own separate, more specific automatic-scoring
   // rule (3.12.C) regardless of forced status, so this is only ever about the 2nd-base runner.
   if(outcome==='GB' && !gs.bases[0] && !!gs.bases[1] && !gs.infieldIn && gs.outs<2) return 'gb-unforced-2nd';
-  if(outcome==='FB' && !!gs.bases[2] && gs.outs<2) return 'tagup';
+  // 3.12.D Fly Ball Advancement: ANY baserunner can tag up and try for one base, not just a runner on
+  // 3rd — the batter's own flyout is what actually produces the 3rd out here if outs is already 1, so
+  // gs.outs<2 is a correctness check (no out for the runner to even attempt against once the half-
+  // inning's already over), not a rule restriction on tagging itself.
+  if(outcome==='FB' && (!!gs.bases[0]||!!gs.bases[1]||!!gs.bases[2]) && gs.outs<2) return 'tagup';
   return null;
 }
 
@@ -4595,6 +4625,17 @@ function startPitcherStint(gs, teamKey){
 }
 function maybeSwapPitcher(gs){
   const fk=fieldingTeamKey(gs);
+  // House rule: this automatic "pull a pitcher who's way past their limit" safety valve is a CPU-only
+  // fallback (so a CPU opponent doesn't ride a dead arm forever) — it should never override a human
+  // manager's own decision to leave someone in, at any point in the game. isHumanControls(fk) alone
+  // isn't quite enough to detect "genuinely CPU" though: in an online game it returns false for the
+  // OTHER real player's team too (that's "not controlled by this device", not "not human"), which
+  // isOnlineOpponentTeam(fk) catches — a team only counts as CPU here if it's neither.
+  if(isHumanControls(fk) || isOnlineOpponentTeam(fk)) return;
+  // Also skip if nobody's left to face this half anyway (3 outs, or the game just ended on this very
+  // play via a walk-off) — a moot swap either way, and if this was the game's final out it would
+  // otherwise silently create a pitcher entry with zero real stats.
+  if(gs.outs>=3 || checkGameOver(gs)) return;
   const pIdx=gs.pitcherIdx[fk];
   const pit=TEAMS[fk].pitchers[pIdx];
   const pitchLine = gs.pitStats[fk][pit.name];
@@ -5102,7 +5143,6 @@ function renderReal(){
   if(SCREEN==='seasonhub' && SEASON_LEADERS_VIEW){ renderSeasonLeadersView(); }
   if(SCREEN==='seasonhub' && FA_VIEW){ renderFreeAgentsView(); }
   if(SCREEN==='seasonhub' && FA_VIEW && FA_SIGN_FLOW){ renderFaSignFlow(); }
-  if(PLAYER_CARD_VIEW){ renderPlayerCardViewOverlay(); }
   if(SCREEN==='playoffs' && PLAYOFF_SCHEDULE_VIEW){ renderPlayoffScheduleView(); }
   if(SCREEN==='roster' && LINEUP_EDIT){ renderLineupEditPicker(); }
   else if(SCREEN==='game') renderGame();
@@ -5114,6 +5154,10 @@ function renderReal(){
   if(CONFIRM_STATE){ renderConfirmOverlay(); }
   if(SUB_PREVIEW){ renderSubPreviewOverlay(); }
   if(PREGAME_ROLL){ renderPregameRollOverlay(); }
+  // Rendered last, on top of every other screen/overlay above — PLAYER_CARD_VIEW can now be opened
+  // from inside another overlay (e.g. tapping a name in the in-game Lineups popup), and needs to
+  // paint over whatever triggered it rather than underneath it.
+  if(PLAYER_CARD_VIEW){ renderPlayerCardViewOverlay(); }
   maybeAutoAdvance();
 }
 // Custom in-app confirm modal — replaces window.confirm(), which is blocked/
@@ -5327,7 +5371,7 @@ function simStep(){
       else if(GS.pendingClass==='gb-unforced-2nd'){ GS.stage='gb-unforced-choice'; }
       else if(GS.pendingClass==='infieldin-gb-loaded'){ initiateInfieldInGBLoaded(); }
       else if(GS.pendingClass==='infieldin-gb-choice'){ GS.stage='infieldin-gb-choice'; }
-      else if(GS.pendingClass==='tagup'){ GS.stage='tagup-choice'; }
+      else if(GS.pendingClass==='tagup'){ beginTagUpChoice(); }
       else if(GS.pendingClass==='extrabase'){ GS.stage='extrabase-choice'; }
       else { afterPlateAppearance(); }
       return true;
@@ -5335,7 +5379,20 @@ function simStep(){
     case 'steal-defense-throw': { const base=GS.pendingSteal.base; GS.pendingSteal=null; initiateSteal(base); return true; }
     case 'gb-unforced-defense-choice': resolveGbUnforcedConcede(); return true; // sim default: always take the sure out [SIMPLIFIED]
     case 'gb-unforced-result': GS.contestResult=null; afterPlateAppearance(); return true;
-    case 'tagup-choice': initiateTagUp(true); return true;
+    case 'tagup-choice': answerTagUpStep(true); return true;
+    case 'tagup-defense-throw': {
+      const c = GS.pendingTagUpThrow; GS.pendingTagUpThrow=null;
+      resolveContestedTagUp(c.contested, c.autoSafeOthers);
+      return true;
+    }
+    case 'tagup-defense-pick': {
+      const tu = GS.tagUp;
+      const sentList = tu.candidates.filter((c,i)=>tu.sent[i]);
+      const contested = sentList.find(c=>c.toBase==='home') || sentList[0];
+      const others = sentList.filter(c=>c!==contested);
+      resolveContestedTagUp(contested, others);
+      return true;
+    }
     case 'tagup-result': GS.contestResult=null; afterPlateAppearance(); return true;
     case 'infieldin-gb-choice': initiateInfieldInGB(true); return true; // sim default: always send [SIMPLIFIED]
     case 'infieldin-gb-result': GS.contestResult=null; afterPlateAppearance(); return true;
@@ -5510,7 +5567,7 @@ function renderSubmenu(){
       }, {isCpuB:true});
     }});
     items.push({label:'Draft', desc:'Draft your team; the CPU drafts and plays the other side.', enabled:true, onclick:()=>{ MODE='ai'; DRAFT_VS_CPU=true; SCREEN='draftsetup'; render(); }});
-    items.push({label:'MLB Season', desc:'Control any number of real MLB teams \u2014 the rest play out on their own.', enabled:true, onclick:()=>{ MODE='ai'; SCREEN = (SEASON && SEASON.teams && SEASON.statsScope==='mlb') ? 'seasonhub' : 'mlbseasonsetup'; render(); }});
+    items.push({label:'MLB Season', desc:'Control any number of real MLB teams \u2014 the rest play out on their own.', enabled:true, onclick:()=>{ MODE='ai'; resumeOrStartSeason('mlb','mlbseasonsetup'); render(); }});
     items.push({label:'Tournament', desc:'4\u201316 teams, single or double elim. Control one side, both sides, or just sim it.', enabled:true, onclick:()=>{ SCREEN='tournament'; render(); }});
   } else if(MENU_CATEGORY==='local'){
     items.push({label:'VS (Human)', desc:'Two players, one device — roll for home field.', enabled:true, onclick:()=>{
@@ -5518,8 +5575,8 @@ function renderSubmenu(){
       rollForHomeAway('Player 1', 'Player 2', ()=>{ SCREEN='teamselect'; PICK_STAGE='away'; STARTER_PICK=0; render(); });
     }});
     items.push({label:'Draft', desc:'Snake draft, 2 players, one device \u2014 then play each other.', enabled:true, onclick:()=>{ MODE='pvp'; DRAFT_VS_CPU=false; SCREEN='draftsetup'; render(); }});
-    items.push({label:'Draft Season', desc:'Draft 1\u20138 teams yourself \u2014 the CPU drafts and plays the rest.', enabled:true, onclick:()=>{ MODE='pvp'; SCREEN = (SEASON && SEASON.teams) ? 'seasonhub' : 'seasonsetup'; render(); }});
-    items.push({label:'MLB Season', desc:'Control any number of real MLB teams \u2014 the rest play out on their own.', enabled:true, onclick:()=>{ MODE='pvp'; SCREEN = (SEASON && SEASON.teams && SEASON.statsScope==='mlb') ? 'seasonhub' : 'mlbseasonsetup'; render(); }});
+    items.push({label:'Draft Season', desc:'Draft 1\u20138 teams yourself \u2014 the CPU drafts and plays the rest.', enabled:true, onclick:()=>{ MODE='pvp'; resumeOrStartSeason('draft-local','seasonsetup'); render(); }});
+    items.push({label:'MLB Season', desc:'Control any number of real MLB teams \u2014 the rest play out on their own.', enabled:true, onclick:()=>{ MODE='pvp'; resumeOrStartSeason('mlb','mlbseasonsetup'); render(); }});
   }
 
   const grid = el('div','tile-grid');
@@ -6423,8 +6480,33 @@ function renderPlayerCardViewOverlay(){
   const overlay = el('div','confirm-overlay');
   const box = el('div','confirm-box');
   const wrap = el('div','fullcard-single-wrap');
-  wrap.appendChild(renderFullCard(player, team, {isPitcher: player.role==='SP'||player.role==='RP'}));
+  const isPitcherRole = player.role==='SP'||player.role==='RP';
+  wrap.appendChild(renderFullCard(player, team, {isPitcher: isPitcherRole}));
   box.appendChild(wrap);
+  const statsSnippet = renderPlayerSeasonStatsSnippet(player.name);
+  if(statsSnippet) box.appendChild(statsSnippet);
+  // Bench Games / Last Pitched: both read from season-long trackers that already exist independent
+  // of this display (benchRest backs the actual mandatory-play rule; lastPitchedGameIdx is a plain
+  // "which game did they last appear in" record) — only shown in a season context, since neither
+  // tracker exists otherwise (Draft Mode single games, Vs Computer, etc. have no game history to
+  // count from).
+  const seasonIdx = team && team.seasonIdx;
+  if(typeof SEASON!=='undefined' && SEASON && seasonIdx!=null){
+    const key = seasonIdx+':'+player.name;
+    if(isPitcherRole && player.role==='RP'){
+      const lastGameIdx = SEASON.lastPitchedGameIdx && SEASON.lastPitchedGameIdx[key];
+      if(lastGameIdx!=null){
+        const gamesAgo = teamGamesPlayedSoFar(seasonIdx) - lastGameIdx;
+        box.appendChild(el('div','rulesnote', `Last Pitched: ${gamesAgo}`));
+      }
+    } else if(!isPitcherRole){
+      const isBenchPlayer = SEASON.teams && SEASON.teams[seasonIdx] && SEASON.teams[seasonIdx].bench.some(p=>p.name===player.name);
+      if(isBenchPlayer){
+        const games = (SEASON.benchRest && SEASON.benchRest[key]) || 0;
+        box.appendChild(el('div','rulesnote', `Bench Games: ${games}`));
+      }
+    }
+  }
   const closeBtn = el('button','btn small secondary','Close'); closeBtn.style.width='100%'; closeBtn.style.marginTop='12px';
   closeBtn.onclick = closePlayerCardView;
   box.appendChild(closeBtn);
@@ -6794,6 +6876,7 @@ function recordPitcherRestDebt(gs, awayIdx, homeIdx){
   if(!SEASON) return;
   if(!SEASON.pitcherRest) SEASON.pitcherRest = {};
   if(!SEASON.pitcherStreak) SEASON.pitcherStreak = {};
+  if(!SEASON.lastPitchedGameIdx) SEASON.lastPitchedGameIdx = {};
   const isMLBSeason = SEASON.statsScope==='mlb';
   [['away',awayIdx],['home',homeIdx]].forEach(([tk, teamIdx])=>{
     if(teamIdx==null) return;
@@ -6803,6 +6886,11 @@ function recordPitcherRestDebt(gs, awayIdx, homeIdx){
       const pitcherObj = TEAMS[tk].pitchers.find(p=>p.name===name);
       if(!pitcherObj) return;
       const key = teamIdx+':'+name;
+      // Universal "last appeared" record — every pitcher who threw at all this game, regardless of
+      // role or season type, unlike pitcherRest/pitcherStreak below which only cover the specific
+      // combinations the tiredness rule (4.4) actually needs. This is what a simple "Last Pitched: N
+      // games ago" display reads from.
+      SEASON.lastPitchedGameIdx[key] = gamesPlayedBefore;
       if(pitcherObj.role==='SP'){
         const restNeeded = isMLBSeason ? 3 : 4;
         const newTiredUntil = gamesPlayedBefore + 1 + restNeeded;
@@ -6881,6 +6969,18 @@ function enforceMandatoryBenchStarts(team, teamIdx){
 const STATS_STORAGE_PREFIX = 'diamondchart';
 function careerStorageKey(scope){ return `${STATS_STORAGE_PREFIX}:${scope}:career`; }
 function activeSeasonStorageKey(scope){ return `${STATS_STORAGE_PREFIX}:${scope}:activeSeason`; }
+// Closing the app (or iOS just reclaiming a backgrounded tab's memory) wipes every in-memory JS
+// variable, SEASON included — but saveActiveSeason() already writes it to localStorage after every
+// completed game, for every season type. The season menu items were only ever checking the in-memory
+// SEASON, though, so a fresh page load always looked like "no season in progress" even when a
+// perfectly good save was sitting right there on disk. This is what every "Season" menu item should
+// call instead of checking SEASON directly.
+function resumeOrStartSeason(scope, freshSetupScreen){
+  if(SEASON && SEASON.teams && SEASON.statsScope===scope){ SCREEN='seasonhub'; return; }
+  const saved = loadActiveSeason(scope);
+  if(saved && saved.teams){ SEASON = saved; SCREEN='seasonhub'; }
+  else { SCREEN = freshSetupScreen; }
+}
 function loadCareerStats(scope){
   try{
     const raw = localStorage.getItem(careerStorageKey(scope));
@@ -9482,14 +9582,14 @@ function resClass(outcome){ return IS_HIT[outcome] ? 'hit' : (outcome==='BB' ? '
 // opts: {isPitcher, tired, onBaseBonus} — all gameplay-only extras, optional.
 function renderFullCard(player, team, opts){
   opts = opts || {};
+  const isPitcher = !!opts.isPitcher;
+  const tired = opts.tired || 0;
   // Real card: an actual photographed/scanned card image, referenced by file path (e.g.
   // 'paul-skenes.jpg') rather than embedded in this file — the browser fetches it directly
   // from wherever the game itself is hosted, so adding more of these never grows this file at all.
   // Purely a display swap: the player's own points/chart/command etc. are completely untouched and
   // still drive every actual gameplay calculation exactly as before — only the *card view* changes.
   function buildTemplateCard(){
-    const isPitcher = !!opts.isPitcher;
-    const tired = opts.tired || 0;
     const onBaseBonus = opts.onBaseBonus || 0;
     const handLabel = player.hand==='S' ? 'S' : (player.hand==='L' ? 'L' : 'R');
 
@@ -9539,9 +9639,7 @@ function renderFullCard(player, team, opts){
     heroArea.appendChild(stack);
     main.appendChild(heroArea);
 
-    if(isPitcher && tired>0){
-      main.appendChild(el('div','cardv3-warn', `TIRED \u2212${tired} CMD \u00b7 Power Die in play`));
-    } else if(!isPitcher && onBaseBonus){
+    if(!isPitcher && onBaseBonus){
       main.appendChild(el('div','cardv3-warn', `IBB chain: On-Base +${onBaseBonus} this at-bat`));
     }
 
@@ -9609,9 +9707,21 @@ function renderFullCard(player, team, opts){
       tryNextExtension();
     }
     wrap.appendChild(img);
-    return wrap;
+    return finishWithTiredBanner(wrap);
   }
-  return buildTemplateCard();
+  return finishWithTiredBanner(buildTemplateCard());
+
+  // Tired banner lives BELOW the card itself (a sibling, not nested inside) so it shows identically
+  // whether this ended up as a real photo or the house template — the old version only ever lived
+  // inside buildTemplateCard(), so it silently stopped appearing the moment a real photo was in play,
+  // which is most players now. Same "TIRED −X CMD" wording/threshold as before, just relocated.
+  function finishWithTiredBanner(cardEl){
+    if(!isPitcher || tired<=0) return cardEl;
+    const outer = el('div','fullcard-outer');
+    outer.appendChild(cardEl);
+    outer.appendChild(el('div','cardv3-warn cardv3-warn-below', `TIRED \u2212${tired} CMD \u00b7 Power Die in play`));
+    return outer;
+  }
 }
 
 function renderGame(){
@@ -9751,7 +9861,8 @@ function renderDecisionFlow(m){
     case 'swing-rolling': renderSwingRolling(m); return;
     case 'swing-rolled': renderSwingRolled(m); return;
     case 'tagup-choice': renderTagupChoice(m); return;
-    case 'tagup-defense-preroll': renderTagupDefensePreroll(m); return;
+    case 'tagup-defense-throw': renderTagupDefenseThrow(m); return;
+    case 'tagup-defense-pick': renderTagupDefensePick(m); return;
     case 'tagup-rolling': renderRollingDie(m, 'Outfield Defense Roll'); return;
     case 'tagup-result': renderContestResult(m); return;
     case 'extrabase-choice': renderExtraBaseChoice(m); return;
@@ -9908,7 +10019,7 @@ function renderOffenseChoice(m, runnerOnBase, canSteal2, canSteal3){
   }
   if(canSteal2){ const s=el('button','btn small blueline','Steal 2nd'); s.onclick=()=>confirmSteal(2); row.appendChild(s); }
   if(canSteal3){ const s=el('button','btn small blueline','Steal 3rd'); s.onclick=()=>confirmSteal(3); row.appendChild(s); }
-  if(runnerOnBase){ const bnt=el('button','btn small secondary','Sac Bunt'); bnt.onclick=initiateBunt; row.appendChild(bnt); }
+  if(runnerOnBase && GS.outs<2){ const bnt=el('button','btn small secondary','Sac Bunt'); bnt.onclick=initiateBunt; row.appendChild(bnt); }
   // Online only: the offense gets an explicit "Continue" to signal they're done deciding, so the
   // defense's Throw Pitch can't fire out from under them while they're still weighing a steal, bunt,
   // or sub — a 30-second auto-continue keeps the game from stalling if someone steps away.
@@ -9965,7 +10076,8 @@ function renderDefSubSlotPick(m){
   const row = el('div','btnrow');
   TEAMS[fk].lineup.forEach((p,i)=>{
     const hasEligible = TEAMS[fk].bench.some(b=>eligibleFor(b,p.pos));
-    const btn = el('button','btn small secondary', `${p.name} (${p.pos})`);
+    const fld = p.fielding && p.fielding[p.pos];
+    const btn = el('button','btn small secondary', `${p.name} (${p.pos}${fld!=null?`, FLD ${fld}`:''})`);
     btn.disabled = !hasEligible;
     btn.onclick=()=>{ GS.subSlotIdx=i; GS.stage='sub-def-bench'; render(); };
     row.appendChild(btn);
@@ -9978,16 +10090,27 @@ function renderDefSubSlotPick(m){
 function renderDefSubBenchPick(m){
   const fk = fieldingTeamKey(GS);
   const slot = TEAMS[fk].lineup[GS.subSlotIdx];
+  const outgoingFld = slot.fielding && slot.fielding[slot.pos];
   const dz = el('div','decision');
-  dz.innerHTML = `<div class="lbl">Who Plays ${slot.pos} for ${slot.name}?</div>`;
+  dz.innerHTML = `<div class="lbl">Who Plays ${slot.pos} for ${slot.name}${outgoingFld!=null?` (FLD ${outgoingFld})`:''}?</div>`;
   const row = el('div','btnrow');
   TEAMS[fk].bench.forEach((p,i)=>{
     if(!eligibleFor(p, slot.pos)) return; // only eligible bench players are offered
     const outOfPosition = !(p.elig && p.elig.includes(slot.pos));
-    const btn = el('button','btn small secondary', outOfPosition ? `${p.name} (${OUT_OF_POSITION_PENALTY} penalty)` : p.name);
+    const incomingFld = p.fielding && p.fielding[slot.pos];
+    const fldTag = incomingFld!=null ? `FLD ${incomingFld}` : '';
+    const label = outOfPosition
+      ? `${p.name} (${[fldTag, `${OUT_OF_POSITION_PENALTY} penalty`].filter(Boolean).join(', ')})`
+      : (fldTag ? `${p.name} (${fldTag})` : p.name);
+    const btn = el('button','btn small secondary', label);
     btn.onclick=()=>{
-      performBatterSub(GS, fk, GS.subSlotIdx, i, 'in on defense');
-      GS.subSlotIdx=null; GS.stage='defense-choice'; render();
+      SUB_PREVIEW = {
+        player: p, team: TEAMS[fk], opts: {isPitcher:false},
+        confirmLabel: 'Confirm Sub',
+        onConfirm: ()=>{ performBatterSub(GS, fk, GS.subSlotIdx, i, 'in on defense'); GS.subSlotIdx=null; GS.stage='defense-choice'; render(); },
+        onBack: ()=>{ render(); }
+      };
+      render();
     };
     row.appendChild(btn);
   });
@@ -10136,8 +10259,10 @@ function renderPinchRunBasePick(m){
 function renderPinchRunBenchPick(m){
   const tk = battingTeamKey(GS);
   const runnerName = GS.bases[GS.subBaseIdx];
+  const currentRunner = TEAMS[tk].lineup.find(x=>x.name===runnerName);
+  const currentSpd = currentRunner ? currentRunner.speed : null;
   const dz = el('div','decision');
-  dz.innerHTML = `<div class="lbl">Who Runs For ${runnerName} (${BASE_LABELS[GS.subBaseIdx]})?</div>`;
+  dz.innerHTML = `<div class="lbl">Who Runs For ${runnerName}${currentSpd!=null?` (SPD ${currentSpd})`:''} (${BASE_LABELS[GS.subBaseIdx]})?</div>`;
   const row = el('div','btnrow');
   // Any bench batter can pinch run — no position eligibility required to run the bases.
   TEAMS[tk].bench.forEach((p,i)=>{
@@ -10207,11 +10332,20 @@ function doRollSwing(){
 // finishes immediately exactly as it always has.
 function maybeOfferAbsChallenge(res, roll){
   if(res.outcome==='BB' || res.outcome==='SO'){
+    // House rule addition: only one challenge attempt per team per at-bat. Tracked against the actual
+    // batter object from this result — a won challenge (13-19) reroll's the SAME at-bat for the SAME
+    // batter (lineupIdx never advances), so it must keep whatever was already used; a genuinely new
+    // batter always starts fresh. Comparing batter identity (not just outcome) is what tells those two
+    // cases apart, since both can land back here with another BB/SO.
+    if(GS.absChallengeAtBatBatter !== res.batter){
+      GS.absChallengeUsed = { away:false, home:false };
+      GS.absChallengeAtBatBatter = res.batter;
+    }
     // A walk only ever hurts the pitching side, and a strikeout only ever hurts the batting side —
     // the other side has nothing to gain from a challenge, so it's never even offered to them.
     const aggrievedSide = res.outcome==='BB' ? fieldingTeamKey(GS) : battingTeamKey(GS);
-    const awayCan = aggrievedSide==='away' && GS.absChallenges.away>0 && isHumanControls('away');
-    const homeCan = aggrievedSide==='home' && GS.absChallenges.home>0 && isHumanControls('home');
+    const awayCan = aggrievedSide==='away' && GS.absChallenges.away>0 && isHumanControls('away') && !GS.absChallengeUsed.away;
+    const homeCan = aggrievedSide==='home' && GS.absChallenges.home>0 && isHumanControls('home') && !GS.absChallengeUsed.home;
     if(awayCan || homeCan){
       GS.absPending = { res, roll, awayCan, homeCan };
       GS.stage = 'abs-challenge-offer';
@@ -10294,6 +10428,7 @@ function finishSwingResolution(res, roll){
 // call (a walk becomes a strikeout, a strikeout becomes a walk) — no reroll, no extra dice. A won
 // challenge (13+) never costs a challenge at all.
 function initiateAbsChallenge(challengingSide){
+  GS.absChallengeUsed[challengingSide] = true;
   startDieRoll(20, 'abs-challenge-rolling', (roll)=>{
     const { res, roll: swingRoll } = GS.absPending;
     let bannerText, bannerClass, nextAction;
@@ -10411,7 +10546,7 @@ function renderSwingRolled(m){
     else if(GS.pendingClass==='gb-unforced-2nd'){ GS.stage='gb-unforced-choice'; render(); }
     else if(GS.pendingClass==='infieldin-gb-loaded'){ initiateInfieldInGBLoaded(); }
     else if(GS.pendingClass==='infieldin-gb-choice'){ GS.stage='infieldin-gb-choice'; render(); }
-    else if(GS.pendingClass==='tagup'){ GS.stage='tagup-choice'; render(); }
+    else if(GS.pendingClass==='tagup'){ beginTagUpChoice(); render(); }
     else if(GS.pendingClass==='extrabase'){ GS.stage='extrabase-choice'; render(); }
     else { afterPlateAppearance(); }
   };
@@ -10725,7 +10860,11 @@ function renderGbUnforcedDefenseChoice(m){
   if(isHumanControls(fk)){
     const row = el('div','btnrow');
     const concedeBtn = el('button','btn small secondary','Concede (Sure Out at 1st)'); concedeBtn.onclick=resolveGbUnforcedConcede;
-    const throwBtn = el('button','btn small blueline','Throw to 3rd'); throwBtn.onclick=resolveGbUnforcedThrow;
+    const throwBtn = el('button','btn small blueline','Throw to 3rd');
+    throwBtn.onclick=()=>{
+      CONFIRM_STATE = { message: `Attempt the throw? Infield Defense ${defValue} vs ${runnerName}'s Speed ${offValue}.`, onConfirm: resolveGbUnforcedThrow };
+      render();
+    };
     row.appendChild(concedeBtn); row.appendChild(throwBtn);
     dz.appendChild(row);
   } else {
@@ -10738,28 +10877,42 @@ function resolveGbUnforcedHold(){
   const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
   const batterName = res.batter.name;
   const pitcherName = currentPitcher(GS).name;
+  const wasOnThird = GS.bases[2];
   GS.outs += 1;
   GS.pitcherOuts[fk] += 1; creditPitch(GS, fk, pitcherName, 'outs');
   creditBat(GS, tk, batterName, 'AB');
-  const bannerText = `${batterName} grounds out — ${GS.bases[1]} holds at 2nd.`;
+  const bannerText = wasOnThird
+    ? `${batterName} grounds out — ${GS.bases[1]} holds at 2nd, ${wasOnThird} holds at 3rd.`
+    : `${batterName} grounds out — ${GS.bases[1]} holds at 2nd.`;
   finishPA(GS, 0, bannerText);
   logEntry(GS, bannerText);
   GS.pendingClass = null;
   afterPlateAppearance();
 }
 // Defense concedes: guaranteed out on the batter, runner automatically safe at 3rd, no roll at all.
+// If a runner was already on 3rd when this whole sequence began, sending the 2nd-base runner scores
+// them unconditionally — the concede/throw choice below is only ever about the incoming runner from
+// 2nd, never about someone who was already standing on 3rd.
 function resolveGbUnforcedConcede(){
   const res = GS.lastResolved;
   const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
   const batterName = res.batter.name;
   const pitcherName = currentPitcher(GS).name;
   const runnerName = GS.bases[1];
+  const wasOnThird = GS.bases[2];
   GS.outs += 1;
   GS.pitcherOuts[fk] += 1; creditPitch(GS, fk, pitcherName, 'outs');
   GS.bases = [null, null, runnerName];
   creditBat(GS, tk, batterName, 'AB');
-  const bannerText = `${batterName} grounds out — ${runnerName} advances to 3rd, conceded by the defense.`;
-  finishPA(GS, 0, bannerText);
+  let bannerText = `${batterName} grounds out — ${runnerName} advances to 3rd, conceded by the defense.`;
+  let runsIn = 0;
+  if(wasOnThird){
+    runsIn = 1;
+    creditBat(GS, tk, wasOnThird, 'R'); creditBat(GS, tk, batterName, 'RBI');
+    creditRunsEarned(GS, fk, pitcherName, [wasOnThird]);
+    bannerText += ` ${wasOnThird} scores!`;
+  }
+  finishPA(GS, runsIn, bannerText);
   logEntry(GS, bannerText);
   GS.pendingClass = null;
   afterPlateAppearance();
@@ -10774,6 +10927,7 @@ function resolveGbUnforcedThrow(){
   const batterName = res.batter.name;
   const pitcherName = currentPitcher(GS).name;
   const runnerName = GS.bases[1];
+  const wasOnThird = GS.bases[2];
   const defValue = TEAMS[fk].defense.infield;
   const offValue = runnerSpeed(tk, runnerName);
   startDieRoll(20, 'gb-unforced-rolling', (roll)=>{
@@ -10791,8 +10945,17 @@ function resolveGbUnforcedThrow(){
       bannerText = `${runnerName} safe at 3rd! ${batterName} also safe at 1st on a fielder's choice \u2014 clean play for the offense.`;
       bannerClass = 'hit'; // styling only (green/positive-for-offense) — no 'H' is ever credited for this play
     }
+    let runsIn = 0;
+    if(wasOnThird){
+      // Scores unconditionally once the offense chose to send — this throw was only ever about the
+      // runner coming from 2nd, never about someone already standing on 3rd.
+      runsIn = 1;
+      creditBat(GS, tk, wasOnThird, 'R'); creditBat(GS, tk, batterName, 'RBI');
+      creditRunsEarned(GS, fk, pitcherName, [wasOnThird]);
+      bannerText += ` ${wasOnThird} scores!`;
+    }
     creditBat(GS, tk, batterName, 'AB');
-    finishPA(GS, 0, bannerText);
+    finishPA(GS, runsIn, bannerText);
     logEntry(GS, bannerText);
     GS.pendingClass = null;
     GS.contestResult = { label:'Throw to 3rd (Unforced Runner)', defLabel:'Infield Defense', defValue, roll, defTotal, offLabel:'Runner Speed', offValue, bannerClass, bannerText, extraNote:'' };
@@ -10833,13 +10996,20 @@ function initiateInfieldInGBLoaded(){
 // be occupied alongside 3rd — so "1st advances" and "2nd must remain" never actually conflict.
 function renderInfieldInGBChoice(m){
   const tk = battingTeamKey(GS);
+  const fk = fieldingTeamKey(GS);
   const runnerName = GS.bases[2];
+  const defValue = TEAMS[fk].defense.infield;
+  const offValue = runnerSpeed(tk, runnerName) + 3; // +3 trying-for-home bonus, same as the actual throw uses
   const dz = el('div','decision');
-  dz.innerHTML = `<div class="lbl">Infield In — Send ${runnerName} Home?</div>`;
+  dz.innerHTML = `<div class="lbl">Infield In — Send ${runnerName} Home? (Infield Defense <b>${defValue}</b> vs ${runnerName}'s Speed <b>${offValue}</b> with the Home bonus)</div>`;
   m.appendChild(dz);
   if(isHumanControls(tk)){
     const row = el('div','btnrow');
-    const sendBtn = el('button','btn small blueline','Send Runner'); sendBtn.onclick=()=>initiateInfieldInGB(true);
+    const sendBtn = el('button','btn small blueline','Send Runner');
+    sendBtn.onclick=()=>{
+      CONFIRM_STATE = { message: `Send ${runnerName} home? Infield Defense ${defValue} vs Speed ${offValue}.`, onConfirm: ()=>initiateInfieldInGB(true) };
+      render();
+    };
     const holdBtn = el('button','btn small secondary','Hold Runner'); holdBtn.onclick=()=>initiateInfieldInGB(false);
     row.appendChild(sendBtn); row.appendChild(holdBtn);
     dz.appendChild(row);
@@ -10900,87 +11070,206 @@ function initiateInfieldInGB(sent){
 }
 
 /* ---------------- TAG-UPS (3.12.D) ---------------- */
+// 3.12.D Fly Ball Advancement: builds one candidate per occupied base, each trying for exactly one
+// base further. Bonuses per the rulebook: (+3) to the OUTFIELD's defense specifically when a runner
+// on 1st is trying for 2nd; (+3) to the RUNNER's speed specifically when a runner on 3rd is trying
+// for home. A runner on 2nd trying for 3rd gets no bonus either way. No 2-outs bonus exists for fly
+// balls (that's a GB-extra-base-only rule, 3.12.B) — outs<2 is already guaranteed by classifyOutcome.
+function buildTagUpCandidates(gs){
+  const candidates = [];
+  if(gs.bases[0]) candidates.push({ runnerName: gs.bases[0], fromIdx:0, toBase:'2nd' });
+  if(gs.bases[1]) candidates.push({ runnerName: gs.bases[1], fromIdx:1, toBase:'3rd' });
+  if(gs.bases[2]) candidates.push({ runnerName: gs.bases[2], fromIdx:2, toBase:'home' });
+  return candidates;
+}
+function tagUpBonusAndDefense(fk, tk, cand){
+  const bonus = cand.toBase==='home' ? 3 : 0; // runner's own speed bonus, home only
+  const defBonus = cand.toBase==='2nd' ? 3 : 0; // outfield's defense bonus, 2nd only
+  const defValue = TEAMS[fk].defense.outfield + fielderBonus(fk,'CF') + defBonus;
+  const offValue = runnerSpeed(tk, cand.runnerName) + bonus;
+  return { defValue, offValue, bonus, defBonus };
+}
+function beginTagUpChoice(){
+  const candidates = buildTagUpCandidates(GS);
+  GS.tagUp = { candidates, sent: new Array(candidates.length).fill(null), step: 0 };
+  GS.stage = 'tagup-choice';
+}
+function answerTagUpStep(sent){
+  const tu = GS.tagUp;
+  tu.sent[tu.step] = sent;
+  tu.step += 1;
+  if(tu.step < tu.candidates.length){ render(); }
+  else { resolveTagUpDecisions(); }
+}
 function renderTagupChoice(m){
-  const tk = battingTeamKey(GS);
+  const tk = battingTeamKey(GS), fk = fieldingTeamKey(GS);
+  const tu = GS.tagUp;
+  const cand = tu.candidates[tu.step];
+  const fromLabel = cand.toBase==='2nd' ? '1st' : (cand.toBase==='3rd' ? '2nd' : '3rd');
   const dz = el('div','decision');
-  dz.innerHTML = `<div class="lbl">Runner Tagging at Third — Send Home?</div>`;
+  dz.innerHTML = `<div class="lbl">${cand.runnerName} at ${fromLabel} — Tag and Try for ${cand.toBase==='home'?'Home':cand.toBase}?</div>`;
   m.appendChild(dz);
   if(isHumanControls(tk)){
     const row = el('div','btnrow');
-    const sendBtn = el('button','btn small blueline','Send Runner'); sendBtn.onclick=()=>{ GS.stage='tagup-defense-preroll'; render(); };
-    const holdBtn = el('button','btn small secondary','Hold Runner'); holdBtn.onclick=()=>initiateTagUp(false);
+    const sendBtn = el('button','btn small blueline','Send Runner'); sendBtn.onclick=()=>{
+      const {defValue, offValue, bonus} = tagUpBonusAndDefense(fk, tk, cand);
+      ROLL_CONFIRM_POPUP = {
+        title: `Send ${cand.runnerName} to ${cand.toBase==='home'?'Home':cand.toBase}?`,
+        offenseLabel: 'Runner Speed'+(bonus?` (+${bonus})`:''), offenseValue: offValue,
+        defenseLabel: 'Outfield Defense', defenseValue: defValue,
+        note: tu.candidates.length>1 ? 'If another runner tags too, the defense picks which one to actually throw at \u2014 the other advances automatically.' : '',
+        confirmLabel: 'Send Runner',
+        onConfirm: ()=>answerTagUpStep(true),
+      };
+      render();
+    };
+    const holdBtn = el('button','btn small secondary','Hold Runner'); holdBtn.onclick=()=>answerTagUpStep(false);
     row.appendChild(sendBtn); row.appendChild(holdBtn);
     dz.appendChild(row);
   } else {
-    autoAdvanceOrWait(dz, tk, ()=>{ if(GS && GS.stage==='tagup-choice'){ GS.stage='tagup-defense-preroll'; render(); } }, 'Waiting for the offense to decide whether to send the runner\u2026');
+    autoAdvanceOrWait(dz, tk, ()=>{ if(GS && GS.stage==='tagup-choice'){ answerTagUpStep(true); } }, 'Waiting for the offense to decide whether to send the runner\u2026');
   }
 }
-// Shown every time a runner is sent home on a tag-up, before the throw actually rolls — the defense
-// sees the real Outfield Defense (+CF bonus, +situational bonuses) vs Runner Speed matchup and has to
-// explicitly commit to making the throw, rather than it happening the instant "Send Runner" is clicked.
-function renderTagupDefensePreroll(m){
-  const fk = fieldingTeamKey(GS);
-  const outsAfter = GS.outs+1; // the batter's flyout hasn't been recorded yet at this point — this is what it'll be
-  const bonus = 3 + (outsAfter===2 ? 3 : 0);
-  const runnerName = GS.bases[2];
-  const tk = battingTeamKey(GS);
-  const defValue = TEAMS[fk].defense.outfield + fielderBonus(fk,'CF');
-  const offValue = runnerSpeed(tk, runnerName) + bonus;
-  const dz = el('div','decision');
-  dz.innerHTML = `<div class="lbl">Throw Home? Outfield Defense <b>${defValue}</b> vs ${runnerName}'s Speed <b>${offValue}</b></div>`;
-  m.appendChild(dz);
-  if(isHumanControls(fk)){
-    const row = el('div','btnrow');
-    const throwBtn = el('button','btn small blueline','Throw Home'); throwBtn.onclick=()=>initiateTagUp(true);
-    row.appendChild(throwBtn);
-    dz.appendChild(row);
-  } else {
-    autoAdvanceOrWait(dz, fk, ()=>{ if(GS && GS.stage==='tagup-defense-preroll'){ initiateTagUp(true); } }, 'Waiting for the defense to make the throw\u2026');
-  }
-}
-
-function initiateTagUp(sent){
+function resolveTagUpDecisions(){
+  const tu = GS.tagUp;
+  const sentList = tu.candidates.filter((c,i)=>tu.sent[i]);
   const res = GS.lastResolved;
   const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
   const batterName = res.batter.name;
   const pitcherName = currentPitcher(GS).name;
-  GS.outs += 1; GS.pitcherOuts[fk] += 1; creditPitch(GS, fk, pitcherName, 'outs'); // batter's flyout is recorded regardless of the tag-up decision
-
-  if(!sent){
-    creditBat(GS, tk, batterName, 'AB'); // held at third: ordinary flyout, counts as an AB
+  // The batter's flyout is recorded regardless of what any runner does.
+  GS.outs += 1; GS.pitcherOuts[fk] += 1; creditPitch(GS, fk, pitcherName, 'outs');
+  if(sentList.length===0){
+    creditBat(GS, tk, batterName, 'AB'); // nobody tagged: ordinary flyout, counts as an AB
+    GS.pendingClass=null; GS.tagUp=null;
     finishPA(GS, 0, '');
-    logEntry(GS, `<b>${res.batter.name}</b>: Flyout — runner holds at third.`);
-    GS.pendingClass=null;
+    logEntry(GS, `<b>${batterName}</b>: Flyout — no runners tag.`);
     afterPlateAppearance();
     return;
   }
-
-  const outsAfter = GS.outs;
-  const bonus = 3 + (outsAfter===2 ? 3 : 0); // +3 trying for Home, +3 more with 2 outs
-  const runnerName = GS.bases[2];
-  const defValue = TEAMS[fk].defense.outfield + fielderBonus(fk,'CF');
-  const offValue = runnerSpeed(tk, runnerName) + bonus;
+  if(sentList.length===1){
+    GS.pendingTagUpThrow = { contested: sentList[0], autoSafeOthers: [] };
+    GS.stage = 'tagup-defense-throw';
+    render();
+    return;
+  }
+  GS.stage = 'tagup-defense-pick';
+  render();
+}
+function renderTagupDefenseThrow(m){
+  const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
+  const {contested, autoSafeOthers} = GS.pendingTagUpThrow;
+  const dz = el('div','decision');
+  dz.innerHTML = `<div class="lbl">${contested.runnerName} Tagging for ${contested.toBase==='home'?'Home':contested.toBase} \u2014 Defense Throws</div>`;
+  m.appendChild(dz);
+  const doThrow = ()=>{ const c=GS.pendingTagUpThrow; GS.pendingTagUpThrow=null; resolveContestedTagUp(c.contested, c.autoSafeOthers); };
+  const showPopupAndThrow = ()=>{
+    const {defValue, offValue, bonus} = tagUpBonusAndDefense(fk, tk, contested);
+    ROLL_CONFIRM_POPUP = {
+      title: `Throw ${contested.toBase==='home'?'Home':`to ${contested.toBase}`}: ${contested.runnerName}`,
+      offenseLabel: 'Runner Speed'+(bonus?` (+${bonus})`:''), offenseValue: offValue,
+      defenseLabel: 'Outfield Defense', defenseValue: defValue,
+      confirmLabel: 'Attempt Throw',
+      onConfirm: doThrow,
+    };
+    render();
+  };
+  if(isHumanControls(fk)){
+    const btn = el('button','btn blueline','Attempt Throw'); btn.onclick=showPopupAndThrow;
+    dz.appendChild(btn);
+  } else {
+    autoAdvanceOrWait(dz, fk, doThrow, 'Waiting for the defense to attempt the throw\u2026');
+  }
+}
+function renderTagupDefensePick(m){
+  const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
+  const tu = GS.tagUp;
+  const sentList = tu.candidates.filter((c,i)=>tu.sent[i]);
+  const dz = el('div','decision');
+  dz.innerHTML = `<div class="lbl">${sentList.length} Runners Tagging — Which Do You Throw At?</div>`;
+  m.appendChild(dz);
+  const pickAndResolve = (cand)=>{ const others = sentList.filter(c=>c!==cand); resolveContestedTagUp(cand, others); };
+  const showPopupForCandidate = (cand)=>{
+    const {defValue, offValue, bonus} = tagUpBonusAndDefense(fk, tk, cand);
+    ROLL_CONFIRM_POPUP = {
+      title: `Throw ${cand.toBase==='home'?'Home':`to ${cand.toBase}`}: ${cand.runnerName}`,
+      offenseLabel: 'Runner Speed'+(bonus?` (+${bonus})`:''), offenseValue: offValue,
+      defenseLabel: 'Outfield Defense', defenseValue: defValue,
+      confirmLabel: 'Throw Here',
+      onConfirm: ()=>pickAndResolve(cand),
+    };
+    render();
+  };
+  if(isHumanControls(fk)){
+    const row = el('div','btnrow');
+    sentList.forEach(cand=>{
+      const label = cand.toBase==='home' ? `Throw Home (vs ${cand.runnerName})` : `Throw to ${cand.toBase} (vs ${cand.runnerName})`;
+      const btn = el('button','btn small blueline', label);
+      btn.onclick = ()=>showPopupForCandidate(cand);
+      row.appendChild(btn);
+    });
+    dz.appendChild(row);
+  } else {
+    autoAdvanceOrWait(dz, fk, ()=>pickAndResolve(sentList.find(c=>c.toBase==='home') || sentList[0]), 'Waiting for the defense to decide which runner to throw at\u2026');
+  }
+}
+// contested: the one runner actually thrown at. autoSafeOthers: every OTHER sent runner, all
+// automatically safe since the defense only gets the one throw. Starting bases are all cleared up
+// front, before any arrival is written, so a runner arriving at a base another runner is simultaneously
+// vacating can't have their new position clobbered by the vacating step.
+function resolveContestedTagUp(contested, autoSafeOthers){
+  const res = GS.lastResolved;
+  const batterName = res.batter.name;
+  const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
+  const pitcherName = currentPitcher(GS).name;
+  const {defValue, offValue} = tagUpBonusAndDefense(fk, tk, contested);
   startDieRoll(20, 'tagup-rolling', (roll)=>{
     const defTotal = defValue+roll;
-    const thrownOut = defTotal > offValue; // defense wins strictly; tie -> Offense (safe/scores)
+    const thrownOut = defTotal > offValue; // tie -> offense
     const bases = GS.bases.slice();
-    let runsIn=0, bannerText, bannerClass;
+    bases[contested.fromIdx] = null;
+    autoSafeOthers.forEach(c=>{ bases[c.fromIdx] = null; });
+
+    let runsIn = 0, scoredFromThird = false, bannerText, bannerClass;
     if(thrownOut){
-      bases[2]=null; GS.outs+=1; GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, pitcherName, 'outs');
-      creditBat(GS, tk, batterName, 'AB'); // thrown out at the plate: still just an ordinary flyout for the batter
-      bannerText=`${runnerName} thrown out at the plate!`; bannerClass='out';
+      GS.outs+=1; GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, pitcherName, 'outs');
+      bannerText = contested.toBase==='home' ? `${contested.runnerName} thrown out at the plate!` : `${contested.runnerName} thrown out trying for ${contested.toBase}!`;
+      bannerClass='out';
+    } else if(contested.toBase==='home'){
+      runsIn+=1; addRuns(GS, tk, 1); scoredFromThird=true;
+      creditBat(GS, tk, contested.runnerName, 'R');
+      creditRunsEarned(GS, fk, pitcherName, [contested.runnerName]);
+      bannerText=`${contested.runnerName} scores on the tag-up!`; bannerClass='hit';
     } else {
-      bases[2]=null; runsIn=1;
-      // 9.4: a sacrifice fly does NOT count as an at-bat, but does credit an RBI.
-      creditBat(GS, tk, batterName, 'RBI'); creditBat(GS, tk, runnerName, 'R');
-      creditRunsEarned(GS, fk, pitcherName, [runnerName]);
-      bannerText=`${runnerName} scores! (Sacrifice Fly)`; bannerClass='hit';
+      const toIdx = contested.toBase==='2nd' ? 1 : 2;
+      bases[toIdx] = contested.runnerName;
+      bannerText=`${contested.runnerName} tags and takes ${contested.toBase}!`; bannerClass='hit';
     }
-    GS.bases=bases;
-    GS.pendingClass=null;
-    finishPA(GS, runsIn, bannerText);
-    logEntry(GS, bannerText+(runsIn>0?' — 1 run scores!':''));
-    GS.contestResult = { label:'Tag-Up Attempt — Runner to Home', defLabel:'Outfield Defense', defValue, roll, defTotal, offLabel:'Runner Speed (+situational)', offValue, bannerClass, bannerText, extraNote:'' };
+
+    let otherText = '';
+    autoSafeOthers.forEach(c=>{
+      if(c.toBase==='home'){
+        runsIn+=1; addRuns(GS, tk, 1); scoredFromThird=true;
+        creditBat(GS, tk, c.runnerName, 'R');
+        creditRunsEarned(GS, fk, pitcherName, [c.runnerName]);
+        otherText += ` ${c.runnerName} scores untouched on the same play!`;
+      } else {
+        const toIdx = c.toBase==='2nd' ? 1 : 2;
+        bases[toIdx] = c.runnerName;
+        otherText += ` ${c.runnerName} takes ${c.toBase} untouched on the same play!`;
+      }
+    });
+
+    // 3.12.D: a run scoring from 3rd on a tag credits the batter a Sacrifice Fly (no AB) and an RBI;
+    // otherwise this was just an ordinary flyout (AB, no RBI) regardless of what any runner did.
+    if(scoredFromThird) creditBat(GS, tk, batterName, 'RBI');
+    else creditBat(GS, tk, batterName, 'AB');
+
+    GS.bases = bases;
+    GS.pendingClass = null; GS.tagUp = null;
+    finishPA(GS, runsIn, bannerText+otherText);
+    logEntry(GS, bannerText+otherText);
+    GS.contestResult = { label:`Tag-Up Attempt \u2014 Runner to ${contested.toBase==='home'?'Home':contested.toBase}`, defLabel:'Outfield Defense', defValue, roll, defTotal, offLabel:'Runner Speed (+situational)', offValue, bannerClass, bannerText: bannerText+otherText, extraNote:'' };
     GS.stage='tagup-result';
     render();
   });
@@ -11374,6 +11663,7 @@ function renderMatView(){
       const isCurrent = teamKey===tk && (GS.lineupIdx[tk]%t.lineup.length)===i;
       const box = el('div','matbox '+teamKey+(isCurrent?' active':''));
       box.innerHTML = `<div class="n">${i+1}</div><div class="nm">${p.name.split(' ').slice(-1)[0]}</div>`;
+      if(p.name!=='(unfilled)') box.onclick = ()=>openPlayerCardView(p, t);
       grid.appendChild(box);
     });
     body.appendChild(grid);
@@ -11386,6 +11676,7 @@ function renderMatView(){
       const isActive = teamKey===fk && GS.pitcherIdx[fk]===i;
       const box = el('div','matbullbox '+teamKey+(isActive?' active':''));
       box.innerHTML = `<div class="role">${i===0?'Starter':'Bullpen'}</div><div class="nm">${p.name}</div><div class="st">CMD ${p.command} · X${p.xZone}</div>`;
+      box.onclick = ()=>openPlayerCardView(p, t);
       row.appendChild(box);
     });
     body.appendChild(row);
