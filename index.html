@@ -6997,8 +6997,8 @@ function enforceMandatoryBenchStarts(team, teamIdx){
 // team+name) — a career follows the real player across however many seasons/teams they're drafted
 // to within the same scope, the same way real career stats aren't tied to any one team.
 const STATS_STORAGE_PREFIX = 'diamondchart';
-function careerStorageKey(scope){ return `${STATS_STORAGE_PREFIX}:${scope}:career`; }
-function activeSeasonStorageKey(scope){ return `${STATS_STORAGE_PREFIX}:${scope}:activeSeason`; }
+function careerStorageKey(scope){ return `${STATS_STORAGE_PREFIX}:${pointsAccountKey()}:${scope}:career`; }
+function activeSeasonStorageKey(scope){ return `${STATS_STORAGE_PREFIX}:${pointsAccountKey()}:${scope}:activeSeason`; }
 // Closing the app (or iOS just reclaiming a backgrounded tab's memory) wipes every in-memory JS
 // variable, SEASON included — but saveActiveSeason() already writes it to localStorage after every
 // completed game, for every season type. The season menu items were only ever checking the in-memory
@@ -7139,10 +7139,10 @@ function commitSeasonToCareer(scope, isPlayoff){
 // season starts and overwrites the single "active season" slot.
 function archiveCompletedSeason(scope){
   try{
-    const raw = localStorage.getItem(`${STATS_STORAGE_PREFIX}:${scope}:seasons`);
+    const raw = localStorage.getItem(`${STATS_STORAGE_PREFIX}:${pointsAccountKey()}:${scope}:seasons`);
     const list = raw ? JSON.parse(raw) : [];
     list.push(Object.assign({}, SEASON, { archivedAt: new Date().toISOString() }));
-    localStorage.setItem(`${STATS_STORAGE_PREFIX}:${scope}:seasons`, JSON.stringify(list));
+    localStorage.setItem(`${STATS_STORAGE_PREFIX}:${pointsAccountKey()}:${scope}:seasons`, JSON.stringify(list));
   } catch(e){}
 }
 
