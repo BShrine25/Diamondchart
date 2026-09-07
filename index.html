@@ -1315,6 +1315,7 @@ const PLAYER_IMAGES = {
   "Cade Smith":"2026 Cards/cade-smith.jpg",
   "Cal Quantrill":"2026 Cards/cal-quantrill.jpg",
   "Cal Raleigh":"2026 Cards/cal-raleigh.jpg",
+  "Mitch Garver":"2026 Cards/mitch-garver.jpg",
   "Caleb Durbin":"2026 Cards/caleb-durbin.jpg",
   "Caleb Ferguson":"2026 Cards/caleb-ferguson.jpg",
   "Caleb Kilian":"2026 Cards/caleb-kilian.jpg",
@@ -1417,6 +1418,7 @@ const PLAYER_IMAGES = {
   "Devin Williams":"2026 Cards/devin-williams.jpg",
   "Didier Fuentes":"2026 Cards/didier-fuentes.jpg",
   "Dillon Dingler":"2026 Cards/dillon-dingler.jpg",
+  "Eduardo Valencia":"2026 Cards/eduardo-valencia.jpg",
   "Dominic Canzone":"2026 Cards/dominic-canzone.jpg",
   "Dominic Smith":"2026 Cards/dominic-smith.jpg",
   "Donovan Walton":"2026 Cards/donovan-walton.jpg",
@@ -3858,6 +3860,7 @@ const MIN_PITCHERS = [
 // Detroit Tigers batters not yet submitted — pitching-only for now.
 const TIG_BATTERS = [
   cardBatter("Dillon Dingler",['C'],360,12,{SO:2,GB:2,FB:3,BB:3,'1B':5,'2B':2,HR:1},10,{C:10}),
+  cardBatter("Eduardo Valencia",['C'],470,8,{SO:3,GB:3,FB:2,'1B':4,'2B':5,HR:3},11,{C:8}),
   cardBatter("Hao-Yu Lee",['3B','2B'],220,14,{SO:2,GB:2,FB:3,BB:1,'1B':8,'2B':3,HR:1},10,{'3B':0,'2B':2}),
   cardBatter("Colt Keith",['1B','3B'],260,14,{SO:1,GB:1,FB:2,BB:2,'1B':10,'2B':2,'3B':1,HR:1},9,{'1B':1,'3B':2}),
   cardBatter("Javier Baez",['2B','SS','CF'],90,12,{SO:1,GB:3,FB:1,'1B':11,'2B':3,HR:1},8,{'2B':2,SS:4,CF:1}),
@@ -4146,6 +4149,7 @@ const SEA_BATTERS = [
   cardBatter("Brendan Donovan",['3B'],250,9,{SO:1,GB:3,FB:3,BB:5,'1B':6,'2B':1,HR:1},12,{'3B':1}),
   cardBatter("J.P. Crawford",['3B','SS'],80,10,{SO:2,GB:2,FB:2,BB:7,'1B':5,'2B':1,HR:1},10,{'3B':2,SS:0}),
   cardBatter("Cal Raleigh",['C'],10,9,{SO:3,GB:2,FB:4,BB:7,'1B':1,'2B':1,HR:1},10,{C:6}),
+  cardBatter("Mitch Garver",['C'],10,9,{SO:4,GB:2,FB:3,BB:7,'1B':3,HR:1},11,{C:3}),
   cardBatter("Leo Rivas",['3B','SS'],10,13,{SO:2,GB:2,FB:3,BB:9,'1B':4,'3B':2,HR:1},8,{'3B':1,SS:3}),
   cardBatter("Josh Naylor",['1B'],170,18,{SO:1,GB:3,FB:2,BB:3,'1B':9,'2B':1,HR:1},10,{'1B':0}),
   cardBatter("Colt Emerson",['SS','3B'],10,12,{SO:3,GB:2,FB:1,BB:2,'1B':7,'2B':1,HR:1},7,{SS:2,'3B':1}),
@@ -4383,7 +4387,7 @@ function newGameState(mode){
     // only grants it once per inning number, not once per half.
     absChallenges:{away:2, home:2},
     absChallengeUsed:{away:false, home:false}, absChallengeAtBatBatter:null,
-    seq: 0,
+    seq: 0, hitAndRun: false,
     absExtraInningsGranted:9,
     absPending:null, absChallengeResult:null,
     wasSimulated:false, // hidden points system — set true the moment runSim() is ever called during this game
@@ -4613,7 +4617,7 @@ function finishPA(gs, runsIn, extraText){
   const tk=battingTeamKey(gs), fk=fieldingTeamKey(gs);
   addRuns(gs, tk, runsIn);
   gs.lineupIdx[tk]=(gs.lineupIdx[tk]+1)%TEAMS[tk].lineup.length;
-  gs.onBaseBonus=0; gs.infieldIn=false; gs.pitchBonus=0; gs.buntAttempt=0;
+  gs.onBaseBonus=0; gs.infieldIn=false; gs.pitchBonus=0; gs.buntAttempt=0; gs.hitAndRun=false;
   // Record this plate appearance against the current pitcher's stint (3-batter-minimum tracking)
   // before any pitching change below — this batter was faced by whoever was actually in at the time.
   const entry = gs.pitcherEntry[fk];
@@ -5436,9 +5440,20 @@ function simStep(){
     case 'dp-preroll': initiateDP(); return true; // defensive fallback if a sim is started while paused here — swing-rolled already resolves this directly during a sim burst
     case 'dp-result': GS.contestResult=null; afterPlateAppearance(); return true;
     case 'steal-result': GS.contestResult=null; afterPlateAppearance(); return true;
+    case 'steal13-defense-choice': GS.stage='steal13-send-home-choice'; return true; // sim default: always throw down
+    case 'steal13-send-home-choice': GS.pendingSteal13=null; initiateSteal13(); return true; // sim default: never send the trail runner
+    case 'steal13-home-result': { const cb=GS.contestResult.onAdvance; GS.contestResult=null; (cb||afterPlateAppearance)(); return true; }
     case 'bunt-attempt1-missed': GS.contestResult=null; runBuntAttempt(); return true;
     case 'bunt-choice': GS.pitchBonus=2; GS.contestResult=null; doThrowPitch(); return true;
     case 'bunt-result': GS.contestResult=null; afterPlateAppearance(); return true;
+    case 'squeeze-foul-choice': GS.contestResult=null; resolveSqueezeTakeAtBat('Sim: offense takes the at-bat after the foul (\u22122 On-Base).'); return true;
+    case 'hitrun-fb-send3rd-choice': GS.hitRunFB.sendThird=false; beginHitRunFBThrow(); return true;
+    case 'hitrun-fb-defense-throw': resolveHitRunFBContest(GS.hitRunFB.candidates[0], []); return true;
+    case 'hitrun-fb-defense-pick': { const c=GS.hitRunFB.candidates; resolveHitRunFBContest(c[0], c.slice(1)); return true; }
+    case 'hitrun-fb-result': GS.contestResult=null; afterPlateAppearance(); return true;
+    case 'squeeze-defense-choice': resolveSqueezeConcede(); return true;
+    case 'squeeze-miss-result': { const cb=GS.contestResult.onAdvance; GS.contestResult=null; (cb||afterPlateAppearance)(); return true; }
+    case 'squeeze-result': GS.contestResult=null; afterPlateAppearance(); return true;
     default: return false; // animation-only stages resolve synchronously inside startDieRoll during sim, so shouldn't land here
   }
 }
@@ -9784,7 +9799,7 @@ function renderGame(){
   // point would still be pointing at whoever's PREVIOUS at-bat concluded, showing the wrong batter
   // entirely (the person actually standing at the plate right now, mid-count, gets bumped off their
   // own card by whoever hit last).
-  const freshBatterStages = ['defense-choice','offense-choice','pitch-rolling','pitch-thrown','swing-rolling','steal-defense-throw','steal-rolling','steal-result','abs-challenge-offer','abs-challenge-rolling','abs-challenge-result'];
+  const freshBatterStages = ['defense-choice','offense-choice','pitch-rolling','pitch-thrown','swing-rolling','steal-defense-throw','steal-rolling','steal-result','steal13-defense-choice','steal13-send-home-choice','steal13-home-rolling','steal13-home-result','abs-challenge-offer','abs-challenge-rolling','abs-challenge-result','squeeze-foul-choice','squeeze-rolling','squeeze-defense-choice','squeeze-home-rolling','squeeze-miss-result'];
   const stillShowingLastPA = GS.lastResolved && !freshBatterStages.includes(GS.stage);
   const displayBatter = stillShowingLastPA ? GS.lastResolved.batter : currentBatter(GS);
   vs.appendChild(renderFullCard(displayBatter, TEAMS[battingTeamKey(GS)], {isPitcher:false, onBaseBonus: GS.onBaseBonus}));
@@ -9843,6 +9858,8 @@ function renderDecisionFlow(m){
   const canInfieldIn = !!GS.bases[2] && GS.outs<2;
   const canSteal2 = !!GS.bases[0] && !GS.bases[1] && !isPositionPlayerPitching(GS);
   const canSteal3 = !!GS.bases[1] && !GS.bases[2] && !isPositionPlayerPitching(GS);
+  const canSqueeze = !!GS.bases[2] && GS.outs<2;
+  const canHitAndRun = !!GS.bases[0] && !GS.bases[1] && !isPositionPlayerPitching(GS);
 
   switch(GS.stage){
     case 'defense-choice':
@@ -9866,7 +9883,7 @@ function renderDecisionFlow(m){
       return;
     case 'offense-choice': {
       let shown = false;
-      if(isHumanControls(tk)){ renderOffenseChoice(m, runnerOnBase, canSteal2, canSteal3); shown = true; }
+      if(isHumanControls(tk)){ renderOffenseChoice(m, runnerOnBase, canSteal2, canSteal3, canSqueeze, canHitAndRun); shown = true; }
       if(isHumanControls(fk)){ renderDefenseReadyToPitch(m); shown = true; }
       if(!shown) return; // maybeAutoAdvance() (called at the end of render()) will fire doThrowPitch via setTimeout for a genuine CPU opponent, or show a waiting message for an online one
       return;
@@ -9899,10 +9916,25 @@ function renderDecisionFlow(m){
     case 'infieldin-gb-result': renderContestResult(m); return;
     case 'steal-rolling': renderRollingDie(m, 'Battery Defense Roll'); return;
     case 'steal-result': renderContestResult(m); return;
+    case 'steal13-defense-choice': renderSteal13DefenseChoice(m); return;
+    case 'steal13-send-home-choice': renderSteal13SendHomeChoice(m); return;
+    case 'steal13-home-rolling': renderRollingDie(m, 'Infield Defense Roll'); return;
+    case 'steal13-home-result': renderContestResult(m); return;
     case 'bunt-rolling': renderRollingDie(m, `Bunt Attempt ${GS.buntAttempt} Roll`); return;
     case 'bunt-attempt1-missed': renderBuntAttempt1Missed(m); return;
     case 'bunt-choice': renderBuntChoice(m); return;
     case 'bunt-result': renderContestResult(m); return;
+    case 'squeeze-foul-choice': renderSqueezeFoulChoice(m); return;
+    case 'hitrun-fb-send3rd-choice': renderHitRunFBSend3rdChoice(m); return;
+    case 'hitrun-fb-defense-throw': renderHitRunFBDefenseThrow(m); return;
+    case 'hitrun-fb-defense-pick': renderHitRunFBDefensePick(m); return;
+    case 'hitrun-fb-rolling': renderRollingDie(m, 'Outfield Defense Roll'); return;
+    case 'hitrun-fb-result': renderContestResult(m); return;
+    case 'squeeze-rolling': renderRollingDie(m, `Squeeze Attempt ${GS.squeezeAttempt} Roll`); return;
+    case 'squeeze-defense-choice': renderSqueezeDefenseChoice(m); return;
+    case 'squeeze-home-rolling': renderRollingDie(m, 'Infield Defense Roll'); return;
+    case 'squeeze-miss-result': renderContestResult(m); return;
+    case 'squeeze-result': renderContestResult(m); return;
     case 'sub-def-slot': renderDefSubSlotPick(m); return;
     case 'sub-def-bench': renderDefSubBenchPick(m); return;
     case 'sub-pitching-pick': renderPitchingChangePick(m); return;
@@ -10012,7 +10044,7 @@ function renderSwitchPositions(m){
   m.appendChild(dz);
 }
 
-function renderOffenseChoice(m, runnerOnBase, canSteal2, canSteal3){
+function renderOffenseChoice(m, runnerOnBase, canSteal2, canSteal3, canSqueeze, canHitAndRun){
   const tk=battingTeamKey(GS);
   const dz = el('div','decision');
   dz.innerHTML = `<div class="lbl">Offense: ${TEAMS[tk].nick}</div>`;
@@ -10035,6 +10067,8 @@ function renderOffenseChoice(m, runnerOnBase, canSteal2, canSteal3){
   if(canSteal2){ const s=el('button','btn small blueline','Steal 2nd'); s.onclick=()=>confirmSteal(2); row.appendChild(s); }
   if(canSteal3){ const s=el('button','btn small blueline','Steal 3rd'); s.onclick=()=>confirmSteal(3); row.appendChild(s); }
   if(runnerOnBase && GS.outs<2){ const bnt=el('button','btn small secondary','Sac Bunt'); bnt.onclick=initiateBunt; row.appendChild(bnt); }
+  if(canSqueeze){ const sq=el('button','btn small secondary','Squeeze'); sq.onclick=initiateSqueeze; row.appendChild(sq); }
+  if(canHitAndRun){ const hr=el('button','btn small secondary','Hit and Run'); hr.onclick=initiateHitAndRun; row.appendChild(hr); }
   // Online only: the offense gets an explicit "Continue" to signal they're done deciding, so the
   // defense's Throw Pitch can't fire out from under them while they're still weighing a steal, bunt,
   // or sub — a 30-second auto-continue keeps the game from stalling if someone steps away.
@@ -10372,7 +10406,208 @@ function maybeOfferAbsChallenge(res, roll){
 }
 // The rest of what doRollSwing used to do in one shot, now reusable so an ABS challenge can call it
 // again with a modified (flipped) or entirely fresh (rerolled) result.
+// House rule: declaring Hit and Run doesn't change the pitch/swing roll itself at all — it just
+// tags this at-bat so finishSwingResolution can intercept four specific outcomes (SO/LD/GB/FB) with
+// their own special handling once the swing result is known. Every other outcome (BB, any hit)
+// proceeds completely normally, since a runner who already broke just ends up wherever the normal
+// rules for that outcome already send him.
+function initiateHitAndRun(){
+  GS.hitAndRun = true;
+  doThrowPitch();
+}
+// SO: batter's strikeout resolves completely normally (credit, out, finishPA all handled by
+// applyOutcome) — the runner going is a genuinely separate event tacked onto it, using the exact same
+// mechanic as a real stolen-base attempt (same matchup, same roll, same result handling), just
+// mandatory instead of a choice.
+function resolveHitAndRunSO(res, roll){
+  applyOutcome(GS, res);
+  logEntry(GS, `<b>${res.batter.name}</b>: Strikeout \u2014 hit and run, runner going.`);
+  checkGameOver(GS);
+  if(GS.gameOver || GS.outs>=3){ GS.stage='swing-rolled'; render(); return; }
+  initiateSteal(2);
+}
+// GB: applyOutcome's own GB branch already does exactly "runner advances automatically, batter out"
+// (the forced-advance chain, no double-play chance) — a double play only ever happens because
+// classifyOutcome offers it as a separate contested decision BEFORE applyOutcome runs, so skipping
+// that classification entirely and calling applyOutcome directly is the whole fix. A runner already on
+// 3rd (the 1st-and-3rd variant) still scores automatically per the normal GB rule (3.12.C), completely
+// unaffected by any of this.
+function resolveHitAndRunGB(res, roll){
+  const applied = applyOutcome(GS, res);
+  GS.lastResolved = Object.assign({}, res, applied);
+  let text = `<b>${res.batter.name}</b>: Ground Ball \u2014 hit and run, runner advances, batter retired (Pitch ${res.pitchTotal} vs OB ${res.effOnBase}, Swing ${roll})`;
+  if(applied.runsIn>0) text += ` \u2014 ${applied.runsIn} run${applied.runsIn>1?'s':''} score!`;
+  logEntry(GS, text);
+  checkGameOver(GS);
+  GS.stage='swing-rolled';
+  render();
+}
+// LD: the batter's own line-drive out is unaffected, but the runner — having already broken for
+// 2nd — is easy pickings on a ball that's caught almost instantly. No roll: it's automatic, matching
+// the house rule exactly. Both outs are counted together as a single combined play.
+function resolveHitAndRunLD(res, roll){
+  const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
+  const pitcherName = currentPitcher(GS).name;
+  const runnerName = GS.bases[0];
+  GS.outs += 1; GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, pitcherName, 'outs'); // the batter's own LD out
+  creditBat(GS, tk, res.batter.name, 'AB');
+  const bases = GS.bases.slice(); bases[0]=null;
+  GS.bases = bases;
+  GS.outs += 1; GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, pitcherName, 'outs'); // the runner doubled off
+  GS.lastResolved = { batter: res.batter };
+  logEntry(GS, `<b>${res.batter.name}</b>: Line Drive Out \u2014 hit and run, ${runnerName} doubled off 1st! (Pitch ${res.pitchTotal} vs OB ${res.effOnBase}, Swing ${roll})`);
+  finishPA(GS, 0, '');
+  checkGameOver(GS);
+  GS.stage='swing-rolled';
+  render();
+}
+// FB: the batter's own fly-out is unaffected. The runner from 1st MUST try to advance (outfield
+// defense vs their speed +5 — the +5 belongs to the RUNNER here, unlike a normal tag-up's 1st-to-2nd
+// bonus which goes to the defense instead). If there's also a runner on 3rd, the offense gets to
+// additionally send them to tag — and if both go, the defense picks exactly one to challenge, same
+// shape as every other multi-candidate throw in this ruleset.
+function hitRunFBMatchup(cand){
+  const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
+  if(cand.fromIdx===0){
+    return { defValue: TEAMS[fk].defense.outfield + fielderBonus(fk,'CF'), offValue: runnerSpeed(tk,cand.runnerName)+5, bonusLabel:' (+5)' };
+  }
+  const t = tagUpBonusAndDefense(fk, tk, cand);
+  return { defValue: t.defValue, offValue: t.offValue, bonusLabel: t.bonus?` (+${t.bonus})`:'' };
+}
+function resolveHitAndRunFB(res, roll){
+  const applied = applyOutcome(GS, res);
+  GS.lastResolved = Object.assign({}, res, applied);
+  logEntry(GS, `<b>${res.batter.name}</b>: Fly Ball Out \u2014 hit and run, runner trying to advance (Pitch ${res.pitchTotal} vs OB ${res.effOnBase}, Swing ${roll})`);
+  checkGameOver(GS);
+  if(GS.gameOver || GS.outs>=3){ GS.stage='swing-rolled'; render(); return; }
+  GS.hitRunFB = {};
+  if(GS.bases[2]){ GS.stage = 'hitrun-fb-send3rd-choice'; } else { beginHitRunFBThrow(); return; }
+  render();
+}
+function renderHitRunFBSend3rdChoice(m){
+  const tk = battingTeamKey(GS);
+  const runnerName = GS.bases[0], thirdRunnerName = GS.bases[2];
+  const dz = el('div','decision');
+  dz.innerHTML = `<div class="lbl">${runnerName} Is Going \u2014 Also Send ${thirdRunnerName} to Tag?</div>`;
+  m.appendChild(dz);
+  const proceed = (sendThird)=>{ GS.hitRunFB.sendThird = sendThird; beginHitRunFBThrow(); };
+  if(isHumanControls(tk)){
+    const row = el('div','btnrow');
+    const yesBtn = el('button','btn small blueline','Yes, Send Him Too'); yesBtn.onclick=()=>proceed(true);
+    const noBtn = el('button','btn small secondary','Just the Runner from 1st'); noBtn.onclick=()=>proceed(false);
+    row.appendChild(yesBtn); row.appendChild(noBtn);
+    dz.appendChild(row);
+  } else {
+    autoAdvanceOrWait(dz, tk, ()=>proceed(false), 'Waiting for the offense to decide\u2026');
+  }
+}
+function beginHitRunFBThrow(){
+  const firstCand = { runnerName: GS.bases[0], fromIdx:0, toBase:'2nd' };
+  if(GS.hitRunFB.sendThird){
+    GS.hitRunFB.candidates = [firstCand, { runnerName: GS.bases[2], fromIdx:2, toBase:'home' }];
+    GS.stage = 'hitrun-fb-defense-pick';
+  } else {
+    GS.hitRunFB.candidates = [firstCand];
+    GS.stage = 'hitrun-fb-defense-throw';
+  }
+  render();
+}
+function renderHitRunFBDefenseThrow(m){
+  const fk = fieldingTeamKey(GS);
+  const cand = GS.hitRunFB.candidates[0];
+  const {defValue, offValue, bonusLabel} = hitRunFBMatchup(cand);
+  const dz = el('div','decision');
+  dz.innerHTML = `<div class="lbl">${cand.runnerName} Trying for 2nd \u2014 Defense Throws</div>
+    <div class="rulesnote">Outfield Defense: <b>${defValue}</b> vs Speed: <b>${offValue}</b>${bonusLabel}</div>`;
+  m.appendChild(dz);
+  const doThrow = ()=>resolveHitRunFBContest(cand, []);
+  if(isHumanControls(fk)){
+    const btn = el('button','btn blueline','Attempt Throw'); btn.onclick=doThrow;
+    dz.appendChild(btn);
+  } else {
+    autoAdvanceOrWait(dz, fk, doThrow, 'Waiting for the defense to attempt the throw\u2026');
+  }
+}
+function renderHitRunFBDefensePick(m){
+  const fk = fieldingTeamKey(GS);
+  const candidates = GS.hitRunFB.candidates;
+  const dz = el('div','decision');
+  dz.innerHTML = `<div class="lbl">Two Runners Going \u2014 Which Do You Throw At?</div>`;
+  m.appendChild(dz);
+  const pick = (cand)=>resolveHitRunFBContest(cand, candidates.filter(c=>c!==cand));
+  if(isHumanControls(fk)){
+    const row = el('div','btnrow');
+    candidates.forEach(cand=>{
+      const label = cand.toBase==='home' ? `Throw Home (vs ${cand.runnerName})` : `Throw to 2nd (vs ${cand.runnerName})`;
+      const btn = el('button','btn small blueline', label);
+      btn.onclick = ()=>pick(cand);
+      row.appendChild(btn);
+    });
+    dz.appendChild(row);
+  } else {
+    autoAdvanceOrWait(dz, fk, ()=>pick(candidates[0]), 'Waiting for the defense to decide which runner to throw at\u2026');
+  }
+}
+function resolveHitRunFBContest(contested, autoSafeOthers){
+  const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
+  const {defValue, offValue} = hitRunFBMatchup(contested);
+  startDieRoll(20, 'hitrun-fb-rolling', (dieRoll)=>{
+    const defTotal = defValue+dieRoll;
+    const contestedSafe = offValue >= defTotal; // tie goes to the offense, matching every other throw here
+    const bases = GS.bases.slice();
+    bases[contested.fromIdx] = null;
+    autoSafeOthers.forEach(c=>{ bases[c.fromIdx]=null; });
+    let runsIn=0, isThirdOutFromFirst=false, bannerText, bannerClass;
+    const pitcherName = currentPitcher(GS).name;
+    if(!contestedSafe){
+      GS.outs += 1; GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, pitcherName, 'outs');
+      // House rule exception: only matters when the MANDATORY 1st-runner is the one caught, and this
+      // is specifically what ends the inning — a normal tag-up's own "wasThirdOut" doesn't have this
+      // extra wrinkle, so it isn't reused here.
+      isThirdOutFromFirst = (contested.fromIdx===0 && GS.outs>=3);
+      bannerText = contested.toBase==='home' ? `${contested.runnerName} thrown out at the plate!` : `${contested.runnerName} thrown out advancing!`;
+      bannerClass = 'out';
+    } else if(contested.toBase==='home'){
+      runsIn+=1; addRuns(GS, tk, 1);
+      creditBat(GS, tk, contested.runnerName, 'R');
+      creditRunsEarned(GS, fk, pitcherName, [contested.runnerName]);
+      bannerText = `${contested.runnerName} scores!`; bannerClass = 'hit';
+    } else {
+      bases[1] = contested.runnerName;
+      bannerText = `${contested.runnerName} safe at 2nd!`; bannerClass = 'hit';
+    }
+    let otherText = '';
+    autoSafeOthers.forEach(c=>{
+      if(isThirdOutFromFirst){ otherText += ` ${c.runnerName} does not score \u2014 the inning just ended.`; return; }
+      if(c.toBase==='home'){
+        runsIn+=1; addRuns(GS, tk, 1);
+        creditBat(GS, tk, c.runnerName, 'R');
+        creditRunsEarned(GS, fk, pitcherName, [c.runnerName]);
+        otherText += ` ${c.runnerName} scores untouched on the same play!`;
+      } else {
+        bases[1] = c.runnerName;
+        otherText += ` ${c.runnerName} advances untouched on the same play!`;
+      }
+    });
+    GS.bases = bases;
+    finishPA(GS, runsIn, '');
+    logEntry(GS, bannerText+otherText);
+    GS.contestResult = { label:'Hit and Run \u2014 Fly Ball', defLabel:'Outfield Defense', defValue, roll:dieRoll, defTotal, offLabel:'Runner Speed', offValue, bannerClass, bannerText: bannerText+otherText, extraNote:'' };
+    GS.stage = 'hitrun-fb-result';
+    render();
+  });
+}
 function finishSwingResolution(res, roll){
+    // Hit and Run: intercepts BEFORE the normal classification (DP/tag-up/extra-base) ever runs, for
+    // exactly the four outcomes the house rule calls out. Captured into a local first, since the
+    // resolvers below call applyOutcome/finishPA internally, which resets GS.hitAndRun before this
+    // function would otherwise get a chance to read it.
+    if(GS.hitAndRun){
+      if(res.outcome==='SO'){ resolveHitAndRunSO(res, roll); return; }
+      if(res.outcome==='LD'){ resolveHitAndRunLD(res, roll); return; }
+      if(res.outcome==='GB'){ resolveHitAndRunGB(res, roll); return; }
+      if(res.outcome==='FB'){ resolveHitAndRunFB(res, roll); return; }
+    }
     // Box score "Team RISP": credit this at-bat toward the team's RISP tally if a runner was in
     // scoring position (2nd or 3rd) BEFORE this swing, using res.outcome directly since it's already
     // fully determined here regardless of which follow-up path (DP/tagup/etc.) the play then takes.
@@ -10591,7 +10826,7 @@ function renderContestResult(m){
   rz.appendChild(el('div','advline', `${c.defLabel} <b>${c.defValue}</b> + roll <b>${c.roll}</b> = <b>${c.defTotal}</b>  vs  ${c.offLabel} <b>${c.offValue}</b>`));
   rz.appendChild(el('div','outcome-banner '+c.bannerClass, c.bannerText));
   if(c.extraNote){ rz.appendChild(el('div','chartline', c.extraNote)); }
-  const advance = ()=>{ GS.contestResult=null; afterPlateAppearance(); };
+  const advance = ()=>{ const onAdvance = GS.contestResult.onAdvance; GS.contestResult=null; (onAdvance||afterPlateAppearance)(); };
   if(isHumanControls(tk)){
     const btn=el('button','btn','Continue'); btn.onclick=advance; rz.appendChild(btn);
   } else {
@@ -10606,6 +10841,15 @@ function renderContestResult(m){
 // initiateSteal itself uses below, so the popup can never show a different number than the real roll.
 function confirmSteal(base){
   const fk=fieldingTeamKey(GS), tk=battingTeamKey(GS);
+  // House rule: stealing 2nd with a runner ALSO on 3rd is a different, richer decision tree — the
+  // defense gets a real choice (throw down or concede the base entirely) before any roll happens, and
+  // if they do throw down, the offense gets a separate, second choice about sending the runner from
+  // 3rd at the same time. A plain steal of 3rd (base===3) is completely unaffected by any of this.
+  if(base===2 && GS.bases[2]){
+    GS.stage = 'steal13-defense-choice';
+    render();
+    return;
+  }
   const runnerIdx = base===2?0:1;
   const runnerName = GS.bases[runnerIdx];
   const bonus = base===3?3:0;
@@ -10622,6 +10866,131 @@ function confirmSteal(base){
     onConfirm: ()=>{ GS.pendingSteal={base}; GS.stage='steal-defense-throw'; render(); },
   };
   render();
+}
+// --- 1st-and-3rd house rule (stealing 2nd with a runner also on 3rd) ---
+// Step 1: the defense decides whether to even contest the steal of 2nd at all. Declining means the
+// runner from 1st takes 2nd for free, with no roll of any kind — and since nobody threw anywhere, the
+// runner on 3rd has no window to move either.
+function renderSteal13DefenseChoice(m){
+  const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
+  const runnerName = GS.bases[0], thirdRunnerName = GS.bases[2];
+  const defValue = TEAMS[fk].defense.battery+fielderBonus(fk,'C');
+  const offValue = runnerSpeed(tk, runnerName);
+  const thirdSpeed = runnerSpeed(tk, thirdRunnerName);
+  const dz = el('div','decision');
+  dz.innerHTML = `<div class="lbl">${runnerName} Steals for 2nd \u2014 ${thirdRunnerName} Also on 3rd</div>
+    <div class="rulesnote">Battery Defense: <b>${defValue}</b> vs ${runnerName}'s Speed: <b>${offValue}</b> &nbsp;|&nbsp; ${thirdRunnerName}'s Speed: <b>${thirdSpeed}</b></div>`;
+  m.appendChild(dz);
+  const letHimTake = ()=>{
+    const bases = GS.bases.slice(); bases[0]=null; bases[1]=runnerName;
+    GS.bases = bases;
+    logEntry(GS, `${runnerName} takes 2nd uncontested \u2014 ${thirdRunnerName} holds at 3rd.`);
+    afterPlateAppearance();
+  };
+  const throwDown = ()=>{ GS.stage='steal13-send-home-choice'; render(); };
+  if(isHumanControls(fk)){
+    const row = el('div','btnrow');
+    const throwBtn = el('button','btn small blueline','Throw Down'); throwBtn.onclick=throwDown;
+    const concedeBtn = el('button','btn small secondary','Let Him Take It'); concedeBtn.onclick=letHimTake;
+    row.appendChild(throwBtn); row.appendChild(concedeBtn);
+    dz.appendChild(row);
+  } else {
+    autoAdvanceOrWait(dz, fk, throwDown, 'Waiting for the defense to decide\u2026');
+  }
+}
+// Step 2 (only reached if the defense chose to throw down): the offense decides whether to ALSO send
+// the runner from 3rd. The speed penalty depends on the out count AT THE MOMENT OF THIS DECISION —
+// less than 2 outs is a steeper -5 (the defense has more incentive/room to worry about the trail
+// runner), exactly 2 outs is a lighter -3.
+function renderSteal13SendHomeChoice(m){
+  const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
+  const thirdRunnerName = GS.bases[2];
+  const penalty = GS.outs<2 ? 5 : 3;
+  const defValue = TEAMS[fk].defense.infield;
+  const offValue = runnerSpeed(tk, thirdRunnerName) - penalty;
+  const dz = el('div','decision');
+  dz.innerHTML = `<div class="lbl">Defense Throws Down \u2014 Send ${thirdRunnerName} Home Too?</div>
+    <div class="rulesnote">If sent: Infield Defense <b>${defValue}</b> vs ${thirdRunnerName}'s Speed <b>${offValue}</b> (\u2212${penalty})</div>`;
+  m.appendChild(dz);
+  const proceed = (sendThird)=>{ GS.pendingSteal13 = sendThird ? {penalty} : null; initiateSteal13(); };
+  if(isHumanControls(tk)){
+    const row = el('div','btnrow');
+    const sendBtn = el('button','btn small blueline','Send Him Home Too'); sendBtn.onclick=()=>proceed(true);
+    const justBtn = el('button','btn small secondary','Just the Steal'); justBtn.onclick=()=>proceed(false);
+    row.appendChild(sendBtn); row.appendChild(justBtn);
+    dz.appendChild(row);
+  } else {
+    autoAdvanceOrWait(dz, tk, ()=>proceed(false), 'Waiting for the offense to decide\u2026');
+  }
+}
+// Step 3: the actual steal-of-2nd roll, identical matchup to a plain steal — but if the offense chose
+// to also send the runner from 3rd, a second roll for the play at home follows immediately after,
+// UNLESS the steal-2nd throw itself just made the 3rd out (in which case the inning's over and there's
+// nothing left to roll for).
+function initiateSteal13(){
+  const fk=fieldingTeamKey(GS), tk=battingTeamKey(GS);
+  const runnerName = GS.bases[0];
+  const thirdRunnerName = GS.bases[2];
+  const sendThird = GS.pendingSteal13;
+  const defValue = TEAMS[fk].defense.battery+fielderBonus(fk,'C');
+  const offValue = runnerSpeed(tk, runnerName);
+  startDieRoll(20, 'steal-rolling', (roll)=>{
+    const defTotal = defValue+roll;
+    const success = offValue >= defTotal; // 3.11.A: tie goes to Offense on a Throw
+    const bases = GS.bases.slice();
+    if(success){
+      bases[0]=null; bases[1]=runnerName;
+      creditBat(GS, tk, runnerName, 'SB');
+      logEntry(GS, `<b>${runnerName}</b> steals 2nd base!`);
+    } else {
+      bases[0]=null; GS.outs+=1;
+      creditBat(GS, tk, runnerName, 'CS');
+      logEntry(GS, `<b>${runnerName}</b> caught stealing 2nd.`);
+    }
+    GS.bases=bases;
+    const wasThirdOut = !success && GS.outs>=3;
+    const willAlsoRollHome = sendThird && !wasThirdOut;
+    GS.contestResult = {
+      label:`Stolen Base Attempt \u2014 ${runnerName} to 2nd`,
+      defLabel:'Battery Defense', defValue, roll, defTotal,
+      offLabel:'Runner Speed', offValue,
+      bannerClass: success?'hit':'out', bannerText: success?'Safe!':'Caught Stealing',
+      onAdvance: willAlsoRollHome ? ()=>initiateSteal13HomePlay(sendThird.penalty, thirdRunnerName) : null,
+    };
+    GS.stage='steal-result';
+    render();
+  });
+}
+function initiateSteal13HomePlay(penalty, thirdRunnerName){
+  const fk=fieldingTeamKey(GS), tk=battingTeamKey(GS);
+  const defValue = TEAMS[fk].defense.infield;
+  const offValue = runnerSpeed(tk, thirdRunnerName) - penalty;
+  startDieRoll(20, 'steal13-home-rolling', (roll)=>{
+    const defTotal = defValue+roll;
+    const success = offValue >= defTotal; // tie goes to Offense, matching every other throw in this ruleset
+    const bases = GS.bases.slice();
+    let runsIn = 0, bannerText, bannerClass;
+    if(success){
+      bases[2]=null; runsIn=1;
+      creditBat(GS, tk, thirdRunnerName, 'R');
+      addRuns(GS, tk, 1);
+      const pitcherName = currentPitcher(GS).name;
+      creditRunsEarned(GS, fk, pitcherName, [thirdRunnerName]);
+      bannerText = `${thirdRunnerName} scores on the front end of the steal!`; bannerClass='hit';
+    } else {
+      bases[2]=null; GS.outs+=1;
+      bannerText = `${thirdRunnerName} thrown out at the plate!`; bannerClass='out';
+    }
+    GS.bases=bases;
+    GS.contestResult = {
+      label:`1st-and-3rd \u2014 ${thirdRunnerName} Tries for Home`,
+      defLabel:'Infield Defense', defValue, roll, defTotal,
+      offLabel:'Runner Speed (situational)', offValue,
+      bannerClass, bannerText,
+    };
+    GS.stage='steal13-home-result';
+    render();
+  });
 }
 // The defense's half of a steal attempt: same matchup the offense already confirmed, but the actual
 // throw is triggered here, on the fielding side, so the fielding side's device is the one that
@@ -11589,6 +11958,171 @@ function renderBuntChoice(m){
   row.appendChild(tryBtn); row.appendChild(pitchBtn);
   dz.appendChild(row);
   m.appendChild(dz);
+}
+
+/* ---------------- SQUEEZE (house rule) ---------------- */
+// Only offered with a runner on 3rd and fewer than 2 outs (see canSqueeze above). Whether the infield
+// was in is captured right at the start and used throughout — it changes both the bonus on a
+// successful suicide break AND what a foul ball means, so it has to reflect the situation as the play
+// actually began, not whatever GS.infieldIn happens to say by the time a later roll resolves.
+function initiateSqueeze(){
+  GS.squeezeAttempt = 0;
+  GS.squeezeInfieldIn = !!GS.infieldIn;
+  runSqueezeAttempt();
+}
+function runSqueezeAttempt(){
+  GS.squeezeAttempt += 1;
+  const attempt = GS.squeezeAttempt;
+  startDieRoll(20, 'squeeze-rolling', (roll)=>{
+    if(roll<=3){ resolveSqueezeMiss(roll); return; }
+    if(roll<=12){
+      if(GS.squeezeInfieldIn){ resolveSqueezeFoulInfieldIn(roll); return; }
+      if(attempt<3){
+        GS.contestResult = { label:`Squeeze \u2014 Attempt ${attempt}`, defLabel:'Roll', defValue:'', roll, defTotal:roll, offLabel:'Result', offValue:'Foul', bannerClass:'out', bannerText:'Foul Ball', extraNote:'' };
+        logEntry(GS, `Squeeze attempt ${attempt}: foul ball (roll ${roll}).`);
+        GS.stage = 'squeeze-foul-choice';
+        render();
+      } else {
+        resolveSqueezeTakeAtBat(`Squeeze attempt 3 fouled off (roll ${roll}) \u2014 last attempt used, batter continues the at-bat.`);
+      }
+      return;
+    }
+    resolveSqueezeSuccess(roll);
+  });
+}
+// Advances any OTHER baserunners (1st/2nd, if present) one base each, uncontested — used identically
+// on a successful squeeze and on a missed (1-3) squeeze, per the house rule ("as they would be
+// stealing with the runner on 3rd"). Never called on a foul, since a foul leaves everyone exactly
+// where they started.
+function advanceOtherRunnersUncontested(){
+  const bases = GS.bases.slice();
+  if(bases[1] && !bases[2]){ bases[2]=bases[1]; bases[1]=null; }
+  if(bases[0] && !bases[1]){ bases[1]=bases[0]; bases[0]=null; }
+  GS.bases = bases;
+}
+function resolveSqueezeMiss(roll){
+  const tk = battingTeamKey(GS), fk = fieldingTeamKey(GS);
+  const runnerName = GS.bases[2];
+  const bases = GS.bases.slice();
+  bases[2] = null;
+  GS.bases = bases;
+  advanceOtherRunnersUncontested();
+  GS.outs += 1;
+  creditBat(GS, tk, runnerName, 'CS');
+  logEntry(GS, `Squeeze missed (roll ${roll}) \u2014 <b>${runnerName}</b> caught stealing home.`);
+  GS.contestResult = { label:`Squeeze \u2014 Attempt ${GS.squeezeAttempt}`, defLabel:'Roll', defValue:'', roll, defTotal:roll, offLabel:'Result', offValue:'Missed', bannerClass:'out', bannerText:`${runnerName} Caught Stealing Home`, extraNote:'Batter continues this at-bat with \u22122 On-Base.', onAdvance: doThrowPitch };
+  GS.onBaseBonus = -2;
+  GS.stage = 'squeeze-miss-result';
+  render();
+}
+// Infield-in specific: a foul that would otherwise be totally harmless instead catches the runner
+// flat-footed, doubled off 3rd automatically — no roll, matching the house rule exactly.
+function resolveSqueezeFoulInfieldIn(roll){
+  const tk = battingTeamKey(GS);
+  const runnerName = GS.bases[2];
+  const bases = GS.bases.slice();
+  bases[2] = null;
+  GS.bases = bases;
+  GS.outs += 1;
+  logEntry(GS, `Squeeze fouled off with the infield in (roll ${roll}) \u2014 <b>${runnerName}</b> doubled off 3rd.`);
+  GS.contestResult = { label:`Squeeze \u2014 Attempt ${GS.squeezeAttempt}`, defLabel:'Roll', defValue:'', roll, defTotal:roll, offLabel:'Result', offValue:'Foul', bannerClass:'out', bannerText:`${runnerName} Doubled Off 3rd`, extraNote:'Infield in: a foul ball here catches the runner instead of just being a dead ball.', onAdvance: doThrowPitch };
+  GS.onBaseBonus = -2;
+  GS.stage = 'squeeze-miss-result';
+  render();
+}
+function resolveSqueezeTakeAtBat(logText){
+  logEntry(GS, logText);
+  GS.onBaseBonus = -2;
+  GS.contestResult = null;
+  doThrowPitch();
+}
+function renderSqueezeFoulChoice(m){
+  const dz = el('div','decision');
+  const lastAttempt = GS.squeezeAttempt>=2;
+  dz.innerHTML = `<div class="lbl">Squeeze Fouled Off \u2014 Try ${lastAttempt?'One Last Time':'Again'}, or Take the At-Bat?</div>`;
+  const row = el('div','btnrow');
+  const tryBtn = el('button','btn small secondary', lastAttempt?'Last Attempt':'Try Again'); tryBtn.onclick=()=>{ GS.contestResult=null; runSqueezeAttempt(); };
+  const takeBtn = el('button','btn small','Take At-Bat (\u22122 On-Base)'); takeBtn.onclick=()=>resolveSqueezeTakeAtBat('Offense takes the normal at-bat after the foul (\u22122 On-Base).');
+  row.appendChild(tryBtn); row.appendChild(takeBtn);
+  dz.appendChild(row);
+  m.appendChild(dz);
+}
+// Bunt is down (13-20). Other runners advance uncontested exactly as on a miss. The defense then
+// decides whether to actually contest the runner from 3rd or just concede the run and take the sure
+// out at 1st — same concede-or-throw shape as the unforced-runner and infield-in plays elsewhere in
+// this ruleset. The +5 "breaking hard" bonus only applies when the infield was NOT in.
+function resolveSqueezeSuccess(roll){
+  logEntry(GS, `Squeeze bunt is down (roll ${roll})!`);
+  GS.stage = 'squeeze-defense-choice';
+  render();
+}
+function resolveSqueezeConcede(){
+  const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
+  const runnerName = GS.bases[2];
+  const b = currentBatter(GS);
+  const bases = GS.bases.slice(); bases[2]=null;
+  GS.bases = bases;
+  advanceOtherRunnersUncontested();
+  addRuns(GS, tk, 1);
+  creditBat(GS, tk, runnerName, 'R');
+  const pitcherName = currentPitcher(GS).name;
+  creditRunsEarned(GS, fk, pitcherName, [runnerName]);
+  GS.outs += 1;
+  GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, pitcherName, 'outs');
+  GS.lastResolved = { batter: b };
+  finishPA(GS, 0, '');
+  logEntry(GS, `Defense concedes the run \u2014 <b>${runnerName}</b> scores, <b>${b.name}</b> out at 1st.`);
+  GS.contestResult = { label:'Squeeze \u2014 Conceded', defLabel:'', defValue:'', roll:'', defTotal:'', offLabel:'', offValue:'', bannerClass:'hit', bannerText:`${runnerName} Scores (Conceded)`, extraNote:'' };
+  GS.stage = 'squeeze-result';
+  render();
+}
+function renderSqueezeDefenseChoice(m){
+  const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
+  const runnerName = GS.bases[2];
+  const bonus = GS.squeezeInfieldIn ? 0 : 5;
+  const defValue = TEAMS[fk].defense.infield;
+  const offValue = runnerSpeed(tk, runnerName) + bonus;
+  const dz = el('div','decision');
+  dz.innerHTML = `<div class="lbl">Bunt Down \u2014 ${runnerName} Breaking for Home</div>
+    <div class="rulesnote">If contested: Infield Defense <b>${defValue}</b> vs ${runnerName}'s Speed <b>${offValue}</b>${bonus?` (+${bonus})`:' (no bonus \u2014 infield was in)'}</div>`;
+  m.appendChild(dz);
+  const throwHome = ()=>{
+    startDieRoll(20, 'squeeze-home-rolling', (dieRoll)=>{
+      const defTotal = defValue+dieRoll;
+      const success = offValue >= defTotal; // tie goes to the offense, matching every other throw here
+      const b = currentBatter(GS);
+      const bases = GS.bases.slice(); bases[2]=null;
+      let bannerText, bannerClass;
+      GS.outs += 1;
+      const pitcherName = currentPitcher(GS).name;
+      GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, pitcherName, 'outs');
+      if(success){
+        addRuns(GS, tk, 1);
+        creditBat(GS, tk, runnerName, 'R');
+        creditRunsEarned(GS, fk, pitcherName, [runnerName]);
+        bannerText = `${runnerName} Scores!`; bannerClass = 'hit';
+      } else {
+        bannerText = `${runnerName} Out at the Plate!`; bannerClass = 'out';
+      }
+      GS.bases = bases;
+      advanceOtherRunnersUncontested();
+      GS.lastResolved = { batter: b };
+      finishPA(GS, 0, '');
+      logEntry(GS, `${bannerText} ${b.name} out at 1st on the bunt.`);
+      GS.contestResult = { label:'Squeeze \u2014 Throw Home', defLabel:'Infield Defense', defValue, roll:dieRoll, defTotal, offLabel:'Runner Speed', offValue, bannerClass, bannerText, extraNote:'' };
+      GS.stage = 'squeeze-result';
+      render();
+    });
+  };
+  if(isHumanControls(fk)){
+    const row = el('div','btnrow');
+    const throwBtn = el('button','btn small blueline','Throw Home'); throwBtn.onclick=throwHome;
+    const concedeBtn = el('button','btn small secondary','Concede the Run'); concedeBtn.onclick=resolveSqueezeConcede;
+    row.appendChild(throwBtn); row.appendChild(concedeBtn);
+    dz.appendChild(row);
+  } else {
+    autoAdvanceOrWait(dz, fk, resolveSqueezeConcede, 'Waiting for the defense to decide\u2026');
+  }
 }
 
 /* ---------------- FLOW CONTROL ---------------- */
