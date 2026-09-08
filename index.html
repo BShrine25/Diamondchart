@@ -3649,7 +3649,7 @@ const SF_PITCHERS = [
   cardPitcher("Landen Roupp",'SP',390,{SO:6,GB:8,FB:3,BB:2,'2B':7,HR:1},5,3),
   cardPitcher("Trevor McDonald",'SP',280,{SO:4,GB:10,FB:3,BB:1,'1B':2,'2B':6,HR:1},5,2),
   cardPitcher("Carson Whisenhunt",'SP',250,{SO:4,GB:7,FB:3,BB:3,'1B':2,'2B':3,HR:1},5,5),
-  cardPitcher("Blade Tidwell",'RP',300,{SO:5,GB:11,BB:1,'1B':3,'2B':6,HR:1},2,7),
+  cardPitcher("Blade Tidwell",'RP',300,{SO:5,GB:11,BB:1,'1B':3,'2B':6,HR:1},2,6),
   cardPitcher("Sam Hentges",'RP',210,{SO:5,GB:6,FB:3,BB:4,'1B':4,'2B':4,HR:1},1,6),
   cardPitcher("JT Brubaker",'RP',210,{SO:4,GB:10,FB:5,BB:1,'1B':2,'2B':4,HR:1},2,1),
   cardPitcher("Keaton Winn",'RP',240,{SO:4,GB:9,FB:3,BB:2,'1B':2,'2B':6,HR:1},1,2),
@@ -5214,6 +5214,36 @@ function renderConfirmOverlay(){
 // Shown whenever a pinch hitter, pinch runner, or relief pitcher is picked by name — full card first,
 // stats underneath when this is a season with real accumulated stats to show, and a chance to back out
 // and pick someone else before the substitution is actually made.
+// Bench Games / Last Played / Last Pitched: all read from season-long trackers that already exist
+// independent of any particular display (benchRest backs the actual mandatory-play rule;
+// lastPlayedGameIdx/lastPitchedGameIdx are plain "which game did they last appear in" records) — only
+// shown in a season context, since none of these trackers exist otherwise (Draft Mode single games,
+// Vs Computer, etc. have no game history to count from). Shared between the general card-view overlay
+// and the in-game sub-confirmation popup, so this looks and works identically in both places.
+function appendBenchOrPitcherRestInfo(box, player, team){
+  const isPitcherRole = player.role==='SP'||player.role==='RP';
+  const seasonIdx = team && team.seasonIdx;
+  if(!(typeof SEASON!=='undefined' && SEASON && seasonIdx!=null)) return;
+  const key = seasonIdx+':'+player.name;
+  if(isPitcherRole && player.role==='RP'){
+    const lastGameIdx = SEASON.lastPitchedGameIdx && SEASON.lastPitchedGameIdx[key];
+    if(lastGameIdx!=null){
+      const gamesAgo = teamGamesPlayedSoFar(seasonIdx) - lastGameIdx;
+      box.appendChild(el('div','rulesnote', `Last Pitched: ${gamesAgo}`));
+    }
+  } else if(!isPitcherRole){
+    const isBenchPlayer = SEASON.teams && SEASON.teams[seasonIdx] && SEASON.teams[seasonIdx].bench.some(p=>p.name===player.name);
+    if(isBenchPlayer){
+      const games = (SEASON.benchRest && SEASON.benchRest[key]) || 0;
+      box.appendChild(el('div','rulesnote', `Bench Games: ${games}`));
+      const lastGameIdx = SEASON.lastPlayedGameIdx && SEASON.lastPlayedGameIdx[key];
+      if(lastGameIdx!=null){
+        const gamesAgo = teamGamesPlayedSoFar(seasonIdx) - lastGameIdx;
+        box.appendChild(el('div','rulesnote', `Last Played: ${gamesAgo} game${gamesAgo===1?'':'s'} ago`));
+      }
+    }
+  }
+}
 function renderSubPreviewOverlay(){
   const { player, team, opts, onConfirm, onBack, confirmLabel } = SUB_PREVIEW;
   const overlay = el('div','confirm-overlay');
@@ -5221,6 +5251,7 @@ function renderSubPreviewOverlay(){
   box.appendChild(renderFullCard(player, team, opts||{}));
   const statsSnippet = renderPlayerSeasonStatsSnippet(player.name);
   if(statsSnippet) box.appendChild(statsSnippet);
+  appendBenchOrPitcherRestInfo(box, player, team);
   const row = el('div','btnrow'); row.style.marginTop='16px';
   const yesBtn = el('button','btn small', confirmLabel||'Confirm');
   yesBtn.onclick = ()=>{ const cb=onConfirm; SUB_PREVIEW=null; cb(); };
@@ -5392,7 +5423,7 @@ function simStep(){
       else if(GS.pendingClass==='infieldin-gb-loaded'){ initiateInfieldInGBLoaded(); }
       else if(GS.pendingClass==='infieldin-gb-choice'){ GS.stage='infieldin-gb-choice'; }
       else if(GS.pendingClass==='tagup'){ beginTagUpChoice(); }
-      else if(GS.pendingClass==='extrabase'){ GS.stage='extrabase-choice'; }
+      else if(GS.pendingClass==='extrabase'){ GS.stage='extrabase-choice'; advanceExtraBaseToAskableStep(); }
       else { afterPlateAppearance(); }
       return true;
     case 'gb-unforced-choice': GS.stage='gb-unforced-defense-choice'; return true; // sim default: always send [SIMPLIFIED]
@@ -6516,28 +6547,7 @@ function renderPlayerCardViewOverlay(){
   box.appendChild(wrap);
   const statsSnippet = renderPlayerSeasonStatsSnippet(player.name);
   if(statsSnippet) box.appendChild(statsSnippet);
-  // Bench Games / Last Pitched: both read from season-long trackers that already exist independent
-  // of this display (benchRest backs the actual mandatory-play rule; lastPitchedGameIdx is a plain
-  // "which game did they last appear in" record) — only shown in a season context, since neither
-  // tracker exists otherwise (Draft Mode single games, Vs Computer, etc. have no game history to
-  // count from).
-  const seasonIdx = team && team.seasonIdx;
-  if(typeof SEASON!=='undefined' && SEASON && seasonIdx!=null){
-    const key = seasonIdx+':'+player.name;
-    if(isPitcherRole && player.role==='RP'){
-      const lastGameIdx = SEASON.lastPitchedGameIdx && SEASON.lastPitchedGameIdx[key];
-      if(lastGameIdx!=null){
-        const gamesAgo = teamGamesPlayedSoFar(seasonIdx) - lastGameIdx;
-        box.appendChild(el('div','rulesnote', `Last Pitched: ${gamesAgo}`));
-      }
-    } else if(!isPitcherRole){
-      const isBenchPlayer = SEASON.teams && SEASON.teams[seasonIdx] && SEASON.teams[seasonIdx].bench.some(p=>p.name===player.name);
-      if(isBenchPlayer){
-        const games = (SEASON.benchRest && SEASON.benchRest[key]) || 0;
-        box.appendChild(el('div','rulesnote', `Bench Games: ${games}`));
-      }
-    }
-  }
+  appendBenchOrPitcherRestInfo(box, player, team);
   const closeBtn = el('button','btn small secondary','Close'); closeBtn.style.width='100%'; closeBtn.style.marginTop='12px';
   closeBtn.onclick = closePlayerCardView;
   box.appendChild(closeBtn);
@@ -7103,12 +7113,21 @@ function accumulateGameStats(gs, awayIdx, homeIdx, isPlayoff){
   const pitchField = isPlayoff ? 'playoffPitchStats' : 'seasonPitchStats';
   if(!SEASON[batField]) SEASON[batField] = {};
   if(!SEASON[pitchField]) SEASON[pitchField] = {};
+  if(!SEASON.lastPlayedGameIdx) SEASON.lastPlayedGameIdx = {};
   const batBucket = SEASON[batField], pitchBucket = SEASON[pitchField];
   [['away',awayIdx],['home',homeIdx]].forEach(([tk, teamIdx])=>{
     if(teamIdx==null) return;
+    const gamesPlayedBefore = teamGamesPlayedSoFar(teamIdx); // must be captured before today's game is marked played
     Object.keys(gs.batStats[tk]).forEach(name=>{
       const line = gs.batStats[tk][name];
       const key = teamIdx+':'+name;
+      // Universal "last appeared" record for batters — any recorded plate appearance counts, whether
+      // it came from a full start, a pinch-hit, or a defensive sub who came up to bat later. This is
+      // deliberately simpler and broader than SEASON.benchRest above, which only tracks the specific
+      // "started and played 6+ innings" streak the mandatory-play rule cares about — this is just
+      // "how long has it actually been since this guy did anything at all," useful for deciding who
+      // needs a look off the bench regardless of that rule.
+      SEASON.lastPlayedGameIdx[key] = gamesPlayedBefore;
       if(!batBucket[key]) batBucket[key] = initBatLine();
       const acc = batBucket[key];
       Object.keys(line).forEach(stat=>{ acc[stat] = (acc[stat]||0) + (line[stat]||0); });
@@ -10869,7 +10888,7 @@ function renderSwingRolled(m){
     else if(GS.pendingClass==='infieldin-gb-loaded'){ initiateInfieldInGBLoaded(); }
     else if(GS.pendingClass==='infieldin-gb-choice'){ GS.stage='infieldin-gb-choice'; render(); }
     else if(GS.pendingClass==='tagup'){ beginTagUpChoice(); render(); }
-    else if(GS.pendingClass==='extrabase'){ GS.stage='extrabase-choice'; render(); }
+    else if(GS.pendingClass==='extrabase'){ GS.stage='extrabase-choice'; advanceExtraBaseToAskableStep(); render(); }
     else { afterPlateAppearance(); }
   };
   // "Continue" belongs to whoever's decision naturally comes next. For a fully-automatic defensive
@@ -10918,7 +10937,11 @@ function confirmSteal(base){
   // if they do throw down, the offense gets a separate, second choice about sending the runner from
   // 3rd at the same time. A plain steal of 3rd (base===3) is completely unaffected by any of this.
   if(base===2 && GS.bases[2]){
-    GS.stage = 'steal13-defense-choice';
+    const runnerName = GS.bases[0], thirdRunnerName = GS.bases[2];
+    CONFIRM_STATE = {
+      message: `Send ${runnerName} to steal 2nd? ${thirdRunnerName} may also break for home if the defense throws down.`,
+      onConfirm: ()=>{ GS.stage = 'steal13-defense-choice'; render(); },
+    };
     render();
     return;
   }
@@ -11015,7 +11038,7 @@ function initiateSteal13(){
       creditBat(GS, tk, runnerName, 'SB');
       logEntry(GS, `<b>${runnerName}</b> steals 2nd base!`);
     } else {
-      bases[0]=null; GS.outs+=1;
+      bases[0]=null; GS.outs+=1; GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, currentPitcher(GS).name, 'outs');
       creditBat(GS, tk, runnerName, 'CS');
       logEntry(GS, `<b>${runnerName}</b> caught stealing 2nd.`);
     }
@@ -11050,7 +11073,7 @@ function initiateSteal13HomePlay(penalty, thirdRunnerName){
       creditRunsEarned(GS, fk, pitcherName, [thirdRunnerName]);
       bannerText = `${thirdRunnerName} scores on the front end of the steal!`; bannerClass='hit';
     } else {
-      bases[2]=null; GS.outs+=1;
+      bases[2]=null; GS.outs+=1; GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, currentPitcher(GS).name, 'outs');
       bannerText = `${thirdRunnerName} thrown out at the plate!`; bannerClass='out';
     }
     GS.bases=bases;
@@ -11103,7 +11126,7 @@ function initiateSteal(base){
       creditBat(GS, tk, runnerName, 'SB');
       logEntry(GS, `<b>${runnerName}</b> steals ${base===2?'2nd':'3rd'} base!`);
     } else {
-      bases[runnerIdx]=null; GS.outs+=1;
+      bases[runnerIdx]=null; GS.outs+=1; GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, currentPitcher(GS).name, 'outs');
       creditBat(GS, tk, runnerName, 'CS');
       logEntry(GS, `<b>${runnerName}</b> caught stealing ${base===2?'2nd':'3rd'}.`);
     }
@@ -11744,12 +11767,31 @@ function resolveContestedTagUp(contested, autoSafeOthers){
     }
 
     let otherText = '';
+    // House rule: if the throw that just got someone out was aimed at a TRAILING runner (any base
+    // other than home) — not the runner who was actually racing for the plate — then that other
+    // runner's run isn't automatic anymore. The out elsewhere makes it a close, ambiguous play at
+    // the plate rather than a clean score, decided by a roll instead: 1\u201310 the run does NOT count,
+    // 11\u201320 it does. If the contested throw was AT home instead, or nobody was thrown out at all,
+    // none of this applies — an auto-safe runner scores exactly as it always has.
+    const closePlayAtPlate = thrownOut && contested.toBase!=='home';
     autoSafeOthers.forEach(c=>{
       if(c.toBase==='home'){
-        runsIn+=1; addRuns(GS, tk, 1); scoredFromThird=true;
-        creditBat(GS, tk, c.runnerName, 'R');
-        creditRunsEarned(GS, fk, pitcherName, [c.runnerName]);
-        otherText += ` ${c.runnerName} scores untouched on the same play!`;
+        if(closePlayAtPlate){
+          const runRoll = Math.floor(Math.random()*20)+1;
+          if(runRoll>=11){
+            runsIn+=1; addRuns(GS, tk, 1); scoredFromThird=true;
+            creditBat(GS, tk, c.runnerName, 'R');
+            creditRunsEarned(GS, fk, pitcherName, [c.runnerName]);
+            otherText += ` Close play at the plate for ${c.runnerName} \u2014 safe! (rolled ${runRoll})`;
+          } else {
+            otherText += ` Close play at the plate for ${c.runnerName} \u2014 the run does not count (rolled ${runRoll}).`;
+          }
+        } else {
+          runsIn+=1; addRuns(GS, tk, 1); scoredFromThird=true;
+          creditBat(GS, tk, c.runnerName, 'R');
+          creditRunsEarned(GS, fk, pitcherName, [c.runnerName]);
+          otherText += ` ${c.runnerName} scores untouched on the same play!`;
+        }
       } else {
         const toIdx = c.toBase==='2nd' ? 1 : 2;
         bases[toIdx] = c.runnerName;
@@ -11773,10 +11815,30 @@ function resolveContestedTagUp(contested, autoSafeOthers){
 }
 
 /* ---------------- EXTRA BASES AFTER A HIT (3.12.B) ---------------- */
+// A trailing runner's target base is only actually open if the runner ahead of them (now sitting on
+// it via the automatic baseline advance) is the one who just got sent — same fix as
+// tagUpStepBlocked/buildTagUpCandidates above, applied to this separate, older system that never got
+// it. 'home' is never blocked (nobody can occupy home); the only other toBase here is 'third' (index 2).
+function extraBaseStepBlocked(eb, step){
+  const cand = eb.candidates[step];
+  if(cand.toBase==='home') return false;
+  const targetIdx = 2;
+  const blockerStep = eb.candidates.findIndex(c=>c.fromIdx===targetIdx);
+  if(blockerStep===-1 || blockerStep>=step) return false;
+  return eb.sent[blockerStep]===false;
+}
+function advanceExtraBaseToAskableStep(){
+  const eb = GS.extraBase;
+  while(eb.step < eb.candidates.length && extraBaseStepBlocked(eb, eb.step)){
+    eb.sent[eb.step] = false;
+    eb.step += 1;
+  }
+}
 function answerExtraBaseStep(sent){
   const eb = GS.extraBase;
   eb.sent[eb.step] = sent;
   eb.step += 1;
+  advanceExtraBaseToAskableStep();
   if(eb.step < eb.candidates.length){ render(); } // ask about the next simultaneously-eligible runner
   else { resolveExtraBaseDecisions(); }
 }
@@ -12121,6 +12183,7 @@ function resolveSqueezeMiss(roll){
   GS.bases = bases;
   advanceOtherRunnersUncontested();
   GS.outs += 1;
+  GS.pitcherOuts[fk] += 1; creditPitch(GS, fk, currentPitcher(GS).name, 'outs');
   creditBat(GS, tk, runnerName, 'CS');
   logEntry(GS, `Squeeze missed (roll ${roll}) \u2014 <b>${runnerName}</b> caught stealing home.`);
   GS.contestResult = { label:`Squeeze \u2014 Attempt ${GS.squeezeAttempt}`, defLabel:'Roll', defValue:'', roll, defTotal:roll, offLabel:'Result', offValue:'Missed', bannerClass:'out', bannerText:`${runnerName} Caught Stealing Home`, extraNote:'Batter continues this at-bat with \u22122 On-Base.', onAdvance: doThrowPitch };
@@ -12131,12 +12194,13 @@ function resolveSqueezeMiss(roll){
 // Infield-in specific: a foul that would otherwise be totally harmless instead catches the runner
 // flat-footed, doubled off 3rd automatically — no roll, matching the house rule exactly.
 function resolveSqueezeFoulInfieldIn(roll){
-  const tk = battingTeamKey(GS);
+  const tk = battingTeamKey(GS), fk = fieldingTeamKey(GS);
   const runnerName = GS.bases[2];
   const bases = GS.bases.slice();
   bases[2] = null;
   GS.bases = bases;
   GS.outs += 1;
+  GS.pitcherOuts[fk] += 1; creditPitch(GS, fk, currentPitcher(GS).name, 'outs');
   logEntry(GS, `Squeeze fouled off with the infield in (roll ${roll}) \u2014 <b>${runnerName}</b> doubled off 3rd.`);
   GS.contestResult = { label:`Squeeze \u2014 Attempt ${GS.squeezeAttempt}`, defLabel:'Roll', defValue:'', roll, defTotal:roll, offLabel:'Result', offValue:'Foul', bannerClass:'out', bannerText:`${runnerName} Doubled Off 3rd`, extraNote:'Infield in: a foul ball here catches the runner instead of just being a dead ball.', onAdvance: doThrowPitch };
   GS.onBaseBonus = -2;
