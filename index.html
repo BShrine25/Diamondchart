@@ -4471,6 +4471,7 @@ function currentPitcher(gs){ const fk=fieldingTeamKey(gs); return TEAMS[fk].pitc
 // Combined, then floored at 0 IP (0 outs) — the limit can't go negative, it just means they're
 // already tired from the start.
 function effectivePitcherIPLimit(p, pitchLine){
+  if(p.isPositionPlayer) return 9; // house rule: a position player pitching should never show as tired
   const bb = (pitchLine && pitchLine.BB) || 0;
   const er = (pitchLine && pitchLine.ER) || 0;
   const bonus = (pitchLine && pitchLine.bonusIP) || 0;
@@ -4520,7 +4521,7 @@ function pitcherTiredExtraInnings(gs){
   const limit = effectivePitcherIPLimit(p, pitchLine)*3;
   let level = 0;
   if(ownOuts >= limit) level = Math.floor((ownOuts-limit)/3) + 1;
-  if(isSeasonPitcherTired(fk, p)) level = Math.max(level, 1);
+  if(!p.isPositionPlayer && isSeasonPitcherTired(fk, p)) level = Math.max(level, 1);
   return level;
 }
 // Rulebook 3.5 glossary "3 BATTER MINIMUM": a reliever must face 3 batters or complete the rest of
@@ -7065,7 +7066,8 @@ function saveCareerStats(scope, career){
   try{ localStorage.setItem(careerStorageKey(scope), JSON.stringify(career)); } catch(e){}
 }
 function saveActiveSeason(scope, season){
-  try{ localStorage.setItem(activeSeasonStorageKey(scope), JSON.stringify(season)); } catch(e){}
+  try{ localStorage.setItem(activeSeasonStorageKey(scope), JSON.stringify(season)); }
+  catch(e){ console.error('Season save FAILED (likely storage quota exceeded):', e); }
 }
 function loadActiveSeason(scope){
   try{
@@ -9345,9 +9347,7 @@ function renderLineupEditPicker(){
   // at least 6 innings — pinch-hitting doesn't count at all.
   if(isBench && SEASON_GAME_IDX!==null && t.seasonIdx!=null && typeof SEASON!=='undefined' && SEASON && SEASON.benchRest){
     const streak = SEASON.benchRest[t.seasonIdx+':'+player.name] || 0;
-    const streakText = streak===0
-      ? 'Started (and played at least 6 innings) last game — fully rested.'
-      : `${streak} game${streak===1?'':'s'} in a row without a qualifying start (pinch-hit appearances don't count, and a start needs at least 6 innings to reset this)${streak>=3?' — must start today!':''}.`;
+    const streakText = `${streak} game${streak===1?'':'s'} in a row without a qualifying start (pinch-hit appearances don't count, and a start needs at least 6 innings to reset this)${streak>=3?' — must start today!':''}.`;
     body.appendChild(el('div','rulesnote', streakText));
   }
 
@@ -10699,15 +10699,28 @@ function finishSwingResolution(res, roll){
     // position player is pitching (isPositionPlayerPitching) — tag-ups are unaffected, a separate
     // mechanic (3.12.D) handled via classifyOutcome/'tagup' above.
     const extraCandidates = [];
+    const hitAndRunRunnerName = GS.hitAndRun ? GS.bases[0] : null;
     if(!isPositionPlayerPitching(GS)){
       if(res.outcome==='1B'){
         if(!!GS.bases[1]) extraCandidates.push({ fromIdx:2, toBase:'home' });
-        if(!!GS.bases[0]) extraCandidates.push({ fromIdx:1, toBase:'third' });
+        // House rule: on a hit-and-run, the runner from 1st automatically reaches 3rd with no throw at
+        // all — not just offered the normal contested extra-base attempt — so they're deliberately
+        // excluded from the normal offer here and handled as a guaranteed advance further below instead.
+        if(!!GS.bases[0] && !hitAndRunRunnerName) extraCandidates.push({ fromIdx:1, toBase:'third' });
       }
-      if(res.outcome==='2B' && !!GS.bases[0]) extraCandidates.push({ fromIdx:2, toBase:'home' });
+      if(res.outcome==='2B' && !!GS.bases[0] && !hitAndRunRunnerName) extraCandidates.push({ fromIdx:2, toBase:'home' });
     }
     const applied = applyOutcome(GS, res);
     GS.lastResolved = Object.assign({}, res, applied);
+    // House rule continued: apply the guaranteed extra base now that applyOutcome has placed the
+    // runner at their normal baseline spot (2nd on a single, 3rd on a double) — a single pushes them
+    // one further to 3rd with no play; a double or better already scores them via the normal baseline
+    // advancement on its own, so there's nothing left to do in that case.
+    if(hitAndRunRunnerName && res.outcome==='1B' && GS.bases[1]===hitAndRunRunnerName){
+      const bases = GS.bases.slice(); bases[1]=null; bases[2]=hitAndRunRunnerName;
+      GS.bases = bases;
+      logEntry(GS, `<b>${hitAndRunRunnerName}</b> takes 3rd on the hit and run \u2014 no throw.`);
+    }
     let text = `<b>${res.batter.name}</b>: ${OUTCOME_LABEL[res.outcome]||res.outcome} (Pitch ${res.pitchTotal} vs OB ${res.effOnBase}, Swing ${roll})`;
     if(applied.runsIn>0) text += ` — ${applied.runsIn} run${applied.runsIn>1?'s':''} score!`;
     logEntry(GS, text);
@@ -11276,19 +11289,32 @@ function initiateForceAt3rd(){
    runners safe, zero outs). Shown to the batting side first (their choice to send), then — only if
    they do send — to the fielding side (their choice how to defend it). */
 function renderGbUnforcedChoice(m){
-  const tk = battingTeamKey(GS);
+  const tk = battingTeamKey(GS), fk = fieldingTeamKey(GS);
   const runnerName = GS.bases[1];
+  const defValue = TEAMS[fk].defense.infield;
+  const offValue = runnerSpeed(tk, runnerName);
   const dz = el('div','decision');
   dz.innerHTML = `<div class="lbl">${runnerName} at 2nd, 1st Open — Send to 3rd?</div>`;
   m.appendChild(dz);
+  const sendToThird = ()=>{ GS.stage='gb-unforced-defense-choice'; render(); };
   if(isHumanControls(tk)){
     const row = el('div','btnrow');
-    const sendBtn = el('button','btn small blueline','Send Runner'); sendBtn.onclick=()=>{ GS.stage='gb-unforced-defense-choice'; render(); };
+    const sendBtn = el('button','btn small blueline','Send Runner'); sendBtn.onclick=()=>{
+      ROLL_CONFIRM_POPUP = {
+        title: `Send ${runnerName} to 3rd?`,
+        offenseLabel: 'Runner Speed', offenseValue: offValue,
+        defenseLabel: 'Infield Defense', defenseValue: defValue,
+        note: 'The defense will then decide whether to concede the base or actually throw.',
+        confirmLabel: 'Send Runner',
+        onConfirm: sendToThird,
+      };
+      render();
+    };
     const holdBtn = el('button','btn small secondary','Hold Runner'); holdBtn.onclick=resolveGbUnforcedHold;
     row.appendChild(sendBtn); row.appendChild(holdBtn);
     dz.appendChild(row);
   } else {
-    autoAdvanceOrWait(dz, tk, ()=>{ if(GS && GS.stage==='gb-unforced-choice'){ GS.stage='gb-unforced-defense-choice'; render(); } }, 'Waiting for the offense to decide whether to send the runner\u2026');
+    autoAdvanceOrWait(dz, tk, sendToThird, 'Waiting for the offense to decide whether to send the runner\u2026');
   }
 }
 function renderGbUnforcedDefenseChoice(m){
@@ -12390,8 +12416,17 @@ function minimalTeamSnapshot(t){
 // pitcherRemoved is the only Set living on GS (see the identical fix used for online push/receive) —
 // converted to plain arrays here since nothing in the box-score render path ever calls .has() on it.
 function snapshotGSForBox(gs){
+  // The play-by-play log is never read by the box score display (scoreboardTableHTML/
+  // battingTableHTML/pitchingTableHTML/determineWinLossPitchers all just need final stat lines), but
+  // it's the single largest part of a live GS — every play's own descriptive text, accumulated across
+  // an entire game. Keeping it in every stored snapshot means a full season's worth of box scores can
+  // very plausibly exceed a mobile browser's localStorage quota, and a failed save from that is
+  // silently swallowed by the try/catch in saveActiveSeason — no error, just data that quietly never
+  // persisted. Dropping it here is a pure size optimization: nothing about what the box score actually
+  // displays depends on it.
   return JSON.parse(JSON.stringify(Object.assign({}, gs, {
     pitcherRemoved: { away: Array.from(gs.pitcherRemoved.away), home: Array.from(gs.pitcherRemoved.home) },
+    log: [],
   })));
 }
 // Builds the full persisted snapshot for one just-finished game — called right before GS/TEAMS get
