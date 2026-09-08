@@ -10144,7 +10144,11 @@ function renderOffenseChoice(m, runnerOnBase, canSteal2, canSteal3, canSqueeze, 
   }
   if(canSteal2){ const s=el('button','btn small blueline','Steal 2nd'); s.onclick=()=>confirmSteal(2); row.appendChild(s); }
   if(canSteal3){ const s=el('button','btn small blueline','Steal 3rd'); s.onclick=()=>confirmSteal(3); row.appendChild(s); }
-  if(runnerOnBase && GS.outs<2){ const bnt=el('button','btn small secondary','Sac Bunt'); bnt.onclick=initiateBunt; row.appendChild(bnt); }
+  if(runnerOnBase && GS.outs<2){
+    const bnt=el('button','btn small secondary','Sac Bunt');
+    bnt.onclick = ()=>{ CONFIRM_STATE = { message: 'Attempt a sacrifice bunt?', onConfirm: initiateBunt }; render(); };
+    row.appendChild(bnt);
+  }
   if(canSqueeze){ const sq=el('button','btn small secondary','Squeeze'); sq.onclick=initiateSqueeze; row.appendChild(sq); }
   if(canHitAndRun){ const hr=el('button','btn small secondary','Hit and Run'); hr.onclick=initiateHitAndRun; row.appendChild(hr); }
   // Online only: the offense gets an explicit "Continue" to signal they're done deciding, so the
@@ -10646,7 +10650,7 @@ function resolveHitRunFBContest(contested, autoSafeOthers){
       bannerText = contested.toBase==='home' ? `${contested.runnerName} thrown out at the plate!` : `${contested.runnerName} thrown out, doubled off!`;
       bannerClass = 'out';
     } else if(contested.toBase==='home'){
-      runsIn+=1; addRuns(GS, tk, 1);
+      runsIn+=1;
       creditBat(GS, tk, contested.runnerName, 'R');
       creditRunsEarned(GS, fk, pitcherName, [contested.runnerName]);
       bannerText = `${contested.runnerName} scores!`; bannerClass = 'hit';
@@ -10658,7 +10662,7 @@ function resolveHitRunFBContest(contested, autoSafeOthers){
     autoSafeOthers.forEach(c=>{
       if(isThirdOutFromFirst){ otherText += ` ${c.runnerName} does not score \u2014 the inning just ended.`; return; }
       if(c.toBase==='home'){
-        runsIn+=1; addRuns(GS, tk, 1);
+        runsIn+=1;
         creditBat(GS, tk, c.runnerName, 'R');
         creditRunsEarned(GS, fk, pitcherName, [c.runnerName]);
         otherText += ` ${c.runnerName} scores untouched on the same play!`;
@@ -11756,7 +11760,7 @@ function resolveContestedTagUp(contested, autoSafeOthers){
       bannerText = contested.toBase==='home' ? `${contested.runnerName} thrown out at the plate!` : `${contested.runnerName} thrown out trying for ${contested.toBase}!`;
       bannerClass='out';
     } else if(contested.toBase==='home'){
-      runsIn+=1; addRuns(GS, tk, 1); scoredFromThird=true;
+      runsIn+=1; scoredFromThird=true;
       creditBat(GS, tk, contested.runnerName, 'R');
       creditRunsEarned(GS, fk, pitcherName, [contested.runnerName]);
       bannerText=`${contested.runnerName} scores on the tag-up!`; bannerClass='hit';
@@ -11779,7 +11783,7 @@ function resolveContestedTagUp(contested, autoSafeOthers){
         if(closePlayAtPlate){
           const runRoll = Math.floor(Math.random()*20)+1;
           if(runRoll>=11){
-            runsIn+=1; addRuns(GS, tk, 1); scoredFromThird=true;
+            runsIn+=1; scoredFromThird=true;
             creditBat(GS, tk, c.runnerName, 'R');
             creditRunsEarned(GS, fk, pitcherName, [c.runnerName]);
             otherText += ` Close play at the plate for ${c.runnerName} \u2014 safe! (rolled ${runRoll})`;
@@ -11787,7 +11791,7 @@ function resolveContestedTagUp(contested, autoSafeOthers){
             otherText += ` Close play at the plate for ${c.runnerName} \u2014 the run does not count (rolled ${runRoll}).`;
           }
         } else {
-          runsIn+=1; addRuns(GS, tk, 1); scoredFromThird=true;
+          runsIn+=1; scoredFromThird=true;
           creditBat(GS, tk, c.runnerName, 'R');
           creditRunsEarned(GS, fk, pitcherName, [c.runnerName]);
           otherText += ` ${c.runnerName} scores untouched on the same play!`;
