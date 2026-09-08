@@ -4354,6 +4354,12 @@ function newGameState(mode){
     mode,
     inning:1, half:'top', outs:0,
     bases:[null,null,null],
+    // Inherited-runner fix: maps a baserunner's name to the name of whoever was pitching when THEY
+    // reached base. Runs (R/ER) are credited off this map, not off whoever's currently on the mound,
+    // so a reliever who inherits runners isn't charged for (or "tired" by) runs the previous pitcher
+    // put on base. Set once, the moment a batter becomes a runner; read and cleared in
+    // creditRunsEarned() the moment that runner scores. See creditRunsEarned for the crediting logic.
+    runnerCredit:{},
     score:{away:0, home:0},
     inningRuns:{away:[], home:[]}, hits:{away:0, home:0}, errors:{away:0, home:0},
     batStats, pitStats, lineupHistory, subLetter:0,
@@ -4745,6 +4751,9 @@ function applyOutcome(gs, res){
     bases=[null,null,null];
   }
 
+  // Inherited-runner fix: a batter who reaches base is now "owned" by whoever is pitching right now
+  // (captured above, before any end-of-PA pitcher swap) for as long as he's on base — see runnerCredit.
+  if(outcome==='BB' || outcome==='1B' || outcome==='2B' || outcome==='3B'){ gs.runnerCredit[batterName] = pitcherName; }
   gs.bases = bases;
 
   // ---- Batting/pitching line stats ----
@@ -4914,6 +4923,7 @@ function applyIntentionalWalk(gs){
     bases[2]=bases[1]; bases[1]=bases[0]; bases[0]=b.name;
   }
   creditBat(gs, tk, b.name, 'BB'); creditPitch(gs, fk, pitcherName, 'BB');
+  gs.runnerCredit[b.name] = pitcherName; // inherited-runner fix — see runnerCredit
   gs.bases=bases;
   gs.lineupIdx[tk] = (gs.lineupIdx[tk]+1)%TEAMS[tk].lineup.length;
   gs.onBaseBonus = 2; // 4.1: next batter gets +2 On-Base
@@ -4939,6 +4949,7 @@ function checkHalfInningOver(gs){
       }
     }
     gs.bases = extraInningGhostRunner(gs);
+    gs.runnerCredit = {};
     return true;
   }
   return false;
@@ -4963,12 +4974,19 @@ function extraInningGhostRunner(gs){
 // else who scores is earned as normal. `scorers` is the list of runner-name strings who crossed the
 // plate on this specific play (order doesn't matter, duplicates aren't expected).
 function creditRunsEarned(gs, fk, pitcherName, scorers){
-  const runs = scorers.length;
-  if(runs<=0) return;
-  const unearned = gs.ghostRunner ? scorers.filter(n=>n===gs.ghostRunner).length : 0;
-  creditPitch(gs, fk, pitcherName, 'R', runs);
-  const earned = runs - unearned;
-  if(earned>0) creditPitch(gs, fk, pitcherName, 'ER', earned);
+  if(scorers.length<=0) return;
+  // Inherited-runner fix: each scorer is credited to whichever pitcher was on the mound when THAT
+  // specific runner reached base (gs.runnerCredit), not necessarily whoever's pitching right now — a
+  // relief pitcher who inherits runners is no longer charged with (or fatigued by) runs the previous
+  // pitcher allowed. `pitcherName` is only a fallback, for a runner with no credit record (the
+  // extra-innings ghost runner, who was placed rather than reaching off any pitcher's own pitching).
+  scorers.forEach(name=>{
+    const creditedPitcher = gs.runnerCredit[name] || pitcherName;
+    const isGhost = gs.ghostRunner && name===gs.ghostRunner;
+    creditPitch(gs, fk, creditedPitcher, 'R', 1);
+    if(!isGhost) creditPitch(gs, fk, creditedPitcher, 'ER', 1);
+    delete gs.runnerCredit[name];
+  });
 }
 function checkGameOver(gs){
   // End-of-top-half check: if the visiting team's turn at bat in the 9th (or
@@ -11215,6 +11233,7 @@ function resolveForceOutOnly(){
     if(!bases[2]){ bases[2]=runnerFrom2; } else { bases[1]=runnerFrom2; }
   }
   GS.bases = bases;
+  GS.runnerCredit[batterName] = pitcherName; // inherited-runner fix — see runnerCredit
   creditBat(GS, tk, batterName, 'AB');
   let bannerText = `Force out at 2nd \u2014 ${batterName} reaches on a fielder's choice.`;
   if(runsIn>0){
@@ -11255,6 +11274,7 @@ function initiateDP(){
     } else {
       bannerText="Fielder's Choice — Batter Safe"; bannerClass='hit';
       bases[0]=res.batter.name;
+      GS.runnerCredit[res.batter.name] = pitcherName; // inherited-runner fix — see runnerCredit
     }
     // 3.12.C: the runner who started on 3rd scores automatically (forced or not) unless this out ends the inning or infield is in.
     if(runnerFrom3){
@@ -11300,6 +11320,7 @@ function initiateForceAt3rd(){
   GS.outs += 1; // the runner forced from 2nd to 3rd is automatically out — no contest, no roll
   GS.pitcherOuts[fk] += 1; creditPitch(GS, fk, pitcherName, 'outs');
   GS.bases = [batterName, runnerFrom1, null]; // batter safe at 1st, 1st's runner forced to 2nd, nobody reaches 3rd
+  GS.runnerCredit[batterName] = pitcherName; // inherited-runner fix — see runnerCredit
   creditBat(GS, tk, batterName, 'AB'); // fielder's choice is always an at-bat, never a hit
   const bannerText = `Force at 3rd! ${runnerFrom2} is out — ${batterName} reaches on a fielder's choice.`;
   finishPA(GS, 0, bannerText);
@@ -11434,10 +11455,12 @@ function resolveGbUnforcedThrow(){
       GS.outs += 1;
       GS.pitcherOuts[fk] += 1; creditPitch(GS, fk, pitcherName, 'outs');
       GS.bases = [batterName, null, null]; // batter safe at 1st regardless, per the rule
+      GS.runnerCredit[batterName] = pitcherName; // inherited-runner fix — see runnerCredit
       bannerText = `${runnerName} thrown out at 3rd! ${batterName} safe at 1st.`;
       bannerClass = 'out';
     } else {
       GS.bases = [batterName, null, runnerName]; // both safe, zero outs on the play
+      GS.runnerCredit[batterName] = pitcherName; // inherited-runner fix — see runnerCredit
       bannerText = `${runnerName} safe at 3rd! ${batterName} also safe at 1st on a fielder's choice \u2014 clean play for the offense.`;
       bannerClass = 'hit'; // styling only (green/positive-for-offense) — no 'H' is ever credited for this play
     }
@@ -11476,6 +11499,7 @@ function initiateInfieldInGBLoaded(){
   GS.outs += 1;
   GS.pitcherOuts[fk] += 1; creditPitch(GS, fk, pitcherName, 'outs');
   GS.bases = [batterName, runnerFrom1, runnerFrom2]; // batter to 1st, 1st's runner to 2nd, 2nd's runner into the now-open 3rd
+  GS.runnerCredit[batterName] = pitcherName; // inherited-runner fix — see runnerCredit
   creditBat(GS, tk, batterName, 'AB');
   const bannerText = `Force at home! ${runnerFrom3} is out at the plate (Infield In) — ${batterName} reaches on a fielder's choice.`;
   finishPA(GS, 0, bannerText);
@@ -11556,6 +11580,7 @@ function initiateInfieldInGB(sent){
       bannerClass='hit';
     }
     GS.bases = [batterName, holdoverRunner, null]; // batter always safe at 1st once sent, regardless of the throw
+    GS.runnerCredit[batterName] = pitcherName; // inherited-runner fix — see runnerCredit
     creditBat(GS, tk, batterName, 'AB');
     finishPA(GS, runsIn, bannerText);
     logEntry(GS, bannerText);
