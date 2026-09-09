@@ -8209,11 +8209,11 @@ function renderSeasonStatsView(){
     .sort((a,b)=> b.s.AB - a.s.AB);
   const batTable = document.createElement('table');
   batTable.className='boxtable';
-  batTable.innerHTML = `<thead><tr><th style="text-align:left;">Player</th><th>AB</th><th>R</th><th>H</th><th>2B</th><th>3B</th><th>HR</th><th>RBI</th><th>BB</th><th>SO</th><th>SB</th><th>AVG</th><th>OPS</th></tr></thead>
+  batTable.innerHTML = `<thead><tr><th style="text-align:left;">Player</th><th>AB</th><th>R</th><th>H</th><th>2B</th><th>3B</th><th>HR</th><th>RBI</th><th>BB</th><th>SO</th><th>SB</th><th>SAC</th><th>AVG</th><th>OPS</th></tr></thead>
     <tbody>${batEntries.length ? batEntries.map(e=>{
       const avg=fmtAvg(battingAvg(e.s)), ops=fmtAvg(battingOPS(e.s));
-      return `<tr><td class="team">${e.name}</td><td>${e.s.AB}</td><td>${e.s.R}</td><td>${e.s.H}</td><td>${e.s['2B']}</td><td>${e.s['3B']}</td><td>${e.s.HR}</td><td>${e.s.RBI}</td><td>${e.s.BB}</td><td>${e.s.SO}</td><td>${e.s.SB}</td><td>${avg}</td><td>${ops}</td></tr>`;
-    }).join('') : `<tr><td class="team" colspan="12" style="text-align:center;color:var(--muted);">${isFA?'No free agents have played this season.':'No games played yet.'}</td></tr>`}</tbody>`;
+      return `<tr><td class="team">${e.name}</td><td>${e.s.AB}</td><td>${e.s.R}</td><td>${e.s.H}</td><td>${e.s['2B']}</td><td>${e.s['3B']}</td><td>${e.s.HR}</td><td>${e.s.RBI}</td><td>${e.s.BB}</td><td>${e.s.SO}</td><td>${e.s.SB}</td><td>${e.s.SAC||0}</td><td>${avg}</td><td>${ops}</td></tr>`;
+    }).join('') : `<tr><td class="team" colspan="13" style="text-align:center;color:var(--muted);">${isFA?'No free agents have played this season.':'No games played yet.'}</td></tr>`}</tbody>`;
   body.appendChild(batTable);
 
   body.appendChild(el('div','team-label', `${teamLabel} — ${sectionLabel} Pitching`));
@@ -12617,7 +12617,7 @@ function battingTableHTML(teamKey){
 
   const totals = {AB:0,R:0,H:0,RBI:0,BB:0,SO:0};
   const rows = [];
-  const doublesBy=[], triplesBy=[], hrBy=[], rbiBy=[], sbBy=[];
+  const doublesBy=[], triplesBy=[], hrBy=[], rbiBy=[], sbBy=[], sacBy=[];
   const subFootnotes = [];
   const history = GS.lineupHistory[teamKey];
   history.forEach((slotEntries, i)=>{
@@ -12631,6 +12631,7 @@ function battingTableHTML(teamKey){
       if(gameLine.HR>0) hrBy.push(`${entry.name}${gameLine.HR>1?` ${gameLine.HR}`:''}${seasonPart('HR')}`);
       if(gameLine.RBI>0) rbiBy.push(`${entry.name}${gameLine.RBI>1?` ${gameLine.RBI}`:''}${seasonPart('RBI')}`);
       if(gameLine.SB>0) sbBy.push(`${entry.name}${gameLine.SB>1?` ${gameLine.SB}`:''}${seasonPart('SB')}`);
+      if(gameLine.SAC>0) sacBy.push(`${entry.name}${gameLine.SAC>1?` ${gameLine.SAC}`:''}${seasonPart('SAC')}`);
       const avgSrc = inSeasonCtx ? combined : gameLine;
       const avg = fmtAvg(battingAvg(avgSrc)), ops = fmtAvg(battingOPS(avgSrc));
       const label = j===0
@@ -12649,6 +12650,7 @@ function battingTableHTML(teamKey){
   if(hrBy.length) summaryLines.push(`HR: ${hrBy.join(', ')}.`);
   if(rbiBy.length) summaryLines.push(`RBI: ${rbiBy.join(', ')}.`);
   if(sbBy.length) summaryLines.push(`SB: ${sbBy.join(', ')}.`);
+  if(sacBy.length) summaryLines.push(`Sac: ${sacBy.join(', ')}.`);
   const summaryHTML = summaryLines.length ? `<div class="boxsummary">${summaryLines.join('<br>')}</div>` : '';
   const footnoteHTML = subFootnotes.length ? `<div class="boxsummary">${subFootnotes.join('<br>')}</div>` : '';
   const risp = GS.teamRISP && GS.teamRISP[teamKey];
