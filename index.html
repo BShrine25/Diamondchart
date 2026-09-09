@@ -12331,25 +12331,32 @@ function renderSqueezeDefenseChoice(m){
       const success = offValue >= defTotal; // tie goes to the offense, matching every other throw here
       const b = currentBatter(GS);
       const bases = GS.bases.slice(); bases[2]=null;
-      let bannerText, bannerClass;
-      GS.outs += 1;
+      let bannerText, bannerClass, logSuffix;
       const pitcherName = currentPitcher(GS).name;
-      GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, pitcherName, 'outs');
+      // The defense chose to go for the LEAD runner instead of the sure out at 1st — same house-rule
+      // pattern as 3.12.B's "goes for the lead runner" throw: nobody ever threw to 1st, so the batter
+      // is automatically safe there regardless of how this throw turns out.
       if(success){
         addRuns(GS, tk, 1);
         creditBat(GS, tk, runnerName, 'R');
         creditRunsEarned(GS, fk, pitcherName, [runnerName]);
         creditBat(GS, tk, b.name, 'SAC'); creditBat(GS, tk, b.name, 'RBI'); // squeeze succeeds: batter's bunt is a sacrifice
         bannerText = `${runnerName} Scores!`; bannerClass = 'hit';
+        logSuffix = `${b.name} safe at 1st on the sacrifice.`;
       } else {
-        creditBat(GS, tk, b.name, 'AB'); // failed squeeze attempt (nobody scored): counts as an ordinary AB, not a sacrifice
+        GS.outs += 1; // the RUNNER is out at the plate, not the batter
+        GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, pitcherName, 'outs');
+        creditBat(GS, tk, b.name, 'AB'); // reaches on a fielder's choice: the sac attempt failed, a runner's out instead
         bannerText = `${runnerName} Out at the Plate!`; bannerClass = 'out';
+        logSuffix = `${b.name} reaches 1st on the fielder's choice.`;
       }
       GS.bases = bases;
-      advanceOtherRunnersUncontested();
+      advanceOtherRunnersUncontested(); // pushes any existing 1st/2nd-base runner up first...
+      const finalBases = GS.bases.slice(); finalBases[0] = b.name; GS.bases = finalBases; // ...then the batter takes the now-open 1st
+      GS.runnerCredit[b.name] = pitcherName;
       GS.lastResolved = { batter: b };
       finishPA(GS, 0, '');
-      logEntry(GS, `${bannerText} ${b.name} out at 1st on the bunt.`);
+      logEntry(GS, `${bannerText} ${logSuffix}`);
       GS.contestResult = { label:'Squeeze \u2014 Throw Home', defLabel:'Infield Defense', defValue, roll:dieRoll, defTotal, offLabel:'Runner Speed', offValue, bannerClass, bannerText, extraNote:'' };
       GS.stage = 'squeeze-result';
       render();
