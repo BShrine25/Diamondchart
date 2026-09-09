@@ -4338,7 +4338,7 @@ const IS_HIT = {'1B':1,'2B':1,'3B':1,HR:1};
 let TEAMS = {away:null, home:null};
 
 /* ============== GAME STATE ============== */
-function initBatLine(){ return {AB:0,R:0,H:0,RBI:0,BB:0,SO:0,'2B':0,'3B':0,HR:0,SB:0,CS:0}; }
+function initBatLine(){ return {AB:0,R:0,H:0,RBI:0,BB:0,SO:0,'2B':0,'3B':0,HR:0,SB:0,CS:0,SAC:0}; }
 function initPitchLine(){ return {outs:0,H:0,R:0,ER:0,BB:0,SO:0,HR:0,BF:0,qualityBonusApplied:false,bonusIP:0}; }
 function subLetterChar(n){ let s=''; while(n>0){ n--; s = String.fromCharCode(97+(n%26))+s; n=Math.floor(n/26); } return s; }
 
@@ -4846,6 +4846,13 @@ function emergencyPitcherEligible(gs){
 // from 3rd on a fly ball (sacrifice fly, 3.12.D) is a different mechanic entirely and stays allowed.
 function isPositionPlayerPitching(gs){
   return !!currentPitcher(gs).isPositionPlayer;
+}
+// House rule: while EITHER team currently has a position player on the mound, ABS challenges are
+// suspended for both sides — they resume only once both teams are back to using a real pitcher.
+function anyPositionPlayerPitching(gs){
+  const ap = TEAMS.away.pitchers[gs.pitcherIdx.away];
+  const hp = TEAMS.home.pitchers[gs.pitcherIdx.home];
+  return !!(ap && ap.isPositionPlayer) || !!(hp && hp.isPositionPlayer);
 }
 // A position player who pitches is, unsurprisingly, a bad pitcher: Command 0, and a fixed chart the
 // same for every position player pitcher (SO 1-3, GB 4-6, FB 7-15, BB 16, 1B 17-18, 2B 19, HR 20+).
@@ -10480,7 +10487,10 @@ function doRollSwing(){
 // in this engine) and still has a challenge to spend. If nobody's eligible, the plate appearance just
 // finishes immediately exactly as it always has.
 function maybeOfferAbsChallenge(res, roll){
-  if(res.outcome==='BB' || res.outcome==='SO'){
+  // House rule: no ABS challenges on a hit-and-run play (the extra baserunning consequences make a
+  // reversed call too messy to unwind), and none for either side while a position player is pitching
+  // for either team (resumes once both teams are back to a real pitcher).
+  if((res.outcome==='BB' || res.outcome==='SO') && !GS.hitAndRun && !anyPositionPlayerPitching(GS)){
     // House rule addition: only one challenge attempt per team per at-bat. Tracked against the actual
     // batter object from this result — a won challenge (13-19) reroll's the SAME at-bat for the SAME
     // batter (lineupIdx never advances), so it must keep whatever was already used; a genuinely new
@@ -10551,11 +10561,20 @@ function resolveHitAndRunLD(res, roll){
   const runnerName = GS.bases[0];
   GS.outs += 1; GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, pitcherName, 'outs'); // the batter's own LD out
   creditBat(GS, tk, res.batter.name, 'AB');
-  const bases = GS.bases.slice(); bases[0]=null;
-  GS.bases = bases;
-  GS.outs += 1; GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, pitcherName, 'outs'); // the runner doubled off
+  let logText;
+  if(GS.outs>=3){
+    // The batter's own LD out was already the 3rd out of the half-inning — the play must end right
+    // there. The runner can't also be doubled off; that would be recording a 4th out, which can never
+    // happen. No further out, no further pitcherOuts/fatigue increment.
+    logText = `<b>${res.batter.name}</b>: Line Drive Out \u2014 hit and run, inning over on the catch. (Pitch ${res.pitchTotal} vs OB ${res.effOnBase}, Swing ${roll})`;
+  } else {
+    const bases = GS.bases.slice(); bases[0]=null;
+    GS.bases = bases;
+    GS.outs += 1; GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, pitcherName, 'outs'); // the runner doubled off
+    logText = `<b>${res.batter.name}</b>: Line Drive Out \u2014 hit and run, ${runnerName} doubled off 1st! (Pitch ${res.pitchTotal} vs OB ${res.effOnBase}, Swing ${roll})`;
+  }
   GS.lastResolved = { batter: res.batter };
-  logEntry(GS, `<b>${res.batter.name}</b>: Line Drive Out \u2014 hit and run, ${runnerName} doubled off 1st! (Pitch ${res.pitchTotal} vs OB ${res.effOnBase}, Swing ${roll})`);
+  logEntry(GS, logText);
   finishPA(GS, 0, '');
   checkGameOver(GS);
   GS.stage='swing-rolled';
@@ -10761,6 +10780,18 @@ function finishSwingResolution(res, roll){
       const bases = GS.bases.slice(); bases[1]=null; bases[2]=hitAndRunRunnerName;
       GS.bases = bases;
       logEntry(GS, `<b>${hitAndRunRunnerName}</b> takes 3rd on the hit and run \u2014 no throw.`);
+    } else if(hitAndRunRunnerName && res.outcome==='2B' && GS.bases[2]===hitAndRunRunnerName){
+      // House rule: on a hit-and-run, the runner from 1st already has a head start when the ball is
+      // hit for a double, so the normal baseline advancement (1st to 3rd on a double) isn't the end of
+      // it — they score from 3rd with no play at all, same guaranteed-advance pattern as the 1B case.
+      const bases = GS.bases.slice(); bases[2]=null;
+      GS.bases = bases;
+      const fk2 = fieldingTeamKey(GS), tk2 = battingTeamKey(GS);
+      addRuns(GS, tk2, 1);
+      creditBat(GS, tk2, hitAndRunRunnerName, 'R');
+      creditBat(GS, tk2, res.batter.name, 'RBI');
+      creditRunsEarned(GS, fk2, currentPitcher(GS).name, [hitAndRunRunnerName]);
+      logEntry(GS, `<b>${hitAndRunRunnerName}</b> scores from 1st on the hit and run \u2014 no throw.`);
     }
     let text = `<b>${res.batter.name}</b>: ${OUTCOME_LABEL[res.outcome]||res.outcome} (Pitch ${res.pitchTotal} vs OB ${res.effOnBase}, Swing ${roll})`;
     if(applied.runsIn>0) text += ` — ${applied.runsIn} run${applied.runsIn>1?'s':''} score!`;
@@ -11830,7 +11861,7 @@ function resolveContestedTagUp(contested, autoSafeOthers){
 
     // 3.12.D: a run scoring from 3rd on a tag credits the batter a Sacrifice Fly (no AB) and an RBI;
     // otherwise this was just an ordinary flyout (AB, no RBI) regardless of what any runner did.
-    if(scoredFromThird) creditBat(GS, tk, batterName, 'RBI');
+    if(scoredFromThird){ creditBat(GS, tk, batterName, 'RBI'); creditBat(GS, tk, batterName, 'SAC'); }
     else creditBat(GS, tk, batterName, 'AB');
 
     GS.bases = bases;
@@ -12125,7 +12156,7 @@ function renderBuntAttempt1Missed(m){
 }
 function applyBuntSuccess(roll){
   const b = currentBatter(GS);
-  const fk = fieldingTeamKey(GS);
+  const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
   const pitcherName = currentPitcher(GS).name;
   GS.outs += 1;
   GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, pitcherName, 'outs');
@@ -12135,6 +12166,7 @@ function applyBuntSuccess(roll){
   if(!bases[2] && bases[1]){ bases[2]=bases[1]; bases[1]=null; }
   if(!bases[1] && bases[0]){ bases[1]=bases[0]; bases[0]=null; }
   GS.bases=bases;
+  creditBat(GS, tk, b.name, 'SAC'); // sacrifice bunt: no AB, credited a SAC instead
   finishPA(GS, 0, 'SAC');
   logEntry(GS, `<b>${b.name}</b> lays down a successful sacrifice bunt (SAC), runners advance (a runner on 3rd cannot score on a bunt).`);
   GS.contestResult = { label:`Sac Bunt — Attempt ${GS.buntAttempt}`, defLabel:'Needed', defValue:'>12', roll, defTotal:roll, offLabel:'Result', offValue:'Success', bannerClass:'hit', bannerText:'Bunt Down!', extraNote:'Runners advance one base — none can score on a bunt.' };
@@ -12215,7 +12247,7 @@ function resolveSqueezeMiss(roll){
   GS.pitcherOuts[fk] += 1; creditPitch(GS, fk, currentPitcher(GS).name, 'outs');
   creditBat(GS, tk, runnerName, 'CS');
   logEntry(GS, `Squeeze missed (roll ${roll}) \u2014 <b>${runnerName}</b> caught stealing home.`);
-  GS.contestResult = { label:`Squeeze \u2014 Attempt ${GS.squeezeAttempt}`, defLabel:'Roll', defValue:'', roll, defTotal:roll, offLabel:'Result', offValue:'Missed', bannerClass:'out', bannerText:`${runnerName} Caught Stealing Home`, extraNote:'Batter continues this at-bat with \u22122 On-Base.', onAdvance: doThrowPitch };
+  GS.contestResult = { label:`Squeeze \u2014 Attempt ${GS.squeezeAttempt}`, defLabel:'Roll', defValue:'', roll, defTotal:roll, offLabel:'Result', offValue:'Missed', bannerClass:'out', bannerText:`${runnerName} Caught Stealing Home`, extraNote:'Batter continues this at-bat with \u22122 On-Base.', onAdvance: ()=>{ GS.infieldIn=false; GS.stage='defense-choice'; render(); } };
   GS.onBaseBonus = -2;
   GS.stage = 'squeeze-miss-result';
   render();
@@ -12273,6 +12305,7 @@ function resolveSqueezeConcede(){
   creditBat(GS, tk, runnerName, 'R');
   const pitcherName = currentPitcher(GS).name;
   creditRunsEarned(GS, fk, pitcherName, [runnerName]);
+  creditBat(GS, tk, b.name, 'SAC'); creditBat(GS, tk, b.name, 'RBI'); // squeeze conceded: batter always out at 1st, run always scores - a sacrifice
   GS.outs += 1;
   GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, pitcherName, 'outs');
   GS.lastResolved = { batter: b };
@@ -12306,8 +12339,10 @@ function renderSqueezeDefenseChoice(m){
         addRuns(GS, tk, 1);
         creditBat(GS, tk, runnerName, 'R');
         creditRunsEarned(GS, fk, pitcherName, [runnerName]);
+        creditBat(GS, tk, b.name, 'SAC'); creditBat(GS, tk, b.name, 'RBI'); // squeeze succeeds: batter's bunt is a sacrifice
         bannerText = `${runnerName} Scores!`; bannerClass = 'hit';
       } else {
+        creditBat(GS, tk, b.name, 'AB'); // failed squeeze attempt (nobody scored): counts as an ordinary AB, not a sacrifice
         bannerText = `${runnerName} Out at the Plate!`; bannerClass = 'out';
       }
       GS.bases = bases;
