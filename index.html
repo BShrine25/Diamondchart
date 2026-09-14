@@ -90,6 +90,8 @@
   .prow .pos{font-family:'Roboto Mono'; font-size:11px; color:#fff; background:var(--blue); border-radius:4px; padding:2px 5px; width:26px; text-align:center; flex-shrink:0;}
   .prow .nm{flex:1; font-size:14px; font-weight:600;}
   .prow .sub2{font-family:'Roboto Mono'; font-size:10.5px; color:var(--muted); white-space:nowrap;}
+  .prow-substat{font-family:'Roboto Mono'; font-size:10.5px; color:var(--muted); padding:0 10px 6px 44px; margin-top:-4px; white-space:normal;}
+  .roster-side-away .prow-substat, .roster-side-home .prow-substat{color:#fff; opacity:0.85;}
   .twoway-tag{display:inline-block; font-size:9px; font-weight:700; letter-spacing:.02em; color:#fff; background:#7c3aed; border-radius:4px; padding:1px 5px; margin-left:5px; vertical-align:middle;}
   .prow.lineup-editable{cursor:pointer; transition:transform 150ms ease;}
   .prow.lineup-editable:active{background:var(--card-hi);}
@@ -5352,25 +5354,44 @@ function renderPregameRollOverlay(){
   overlay.appendChild(box);
   root.appendChild(overlay);
 }
-// This season's accumulated line for a given player name, merged across any team he's stinted with
-// (see mergedStatsByPlayer) — only meaningful in Draft Season or MLB Season, where SEASON persists
-// across games; returns null anywhere else (Pass & Play, Vs Computer, one-off Draft Mode) since
-// there's no season-long stat history to show.
-function renderPlayerSeasonStatsSnippet(name){
+// Low-level: this season's (or playoff's) accumulated batting/pitching line for a player, as an
+// array of formatted strings (one per stat category that applies), or null if there's nothing to
+// show — no games played yet, or no persistent SEASON at all (Pass & Play, Vs Computer, one-off
+// Draft Mode). Shared by renderPlayerSeasonStatsSnippet (full card view) and the pregame roster
+// screen (compact line under each row) so both read the exact same numbers.
+function getPlayerSeasonStatsLines(name){
   if(!SEASON || !SEASON.teams) return null;
   const usePlayoff = typeof PLAYOFF_MATCH_REF!=='undefined' && !!PLAYOFF_MATCH_REF;
   const batSource = usePlayoff ? SEASON.playoffBatStats : SEASON.seasonBatStats;
   const pitchSource = usePlayoff ? SEASON.playoffPitchStats : SEASON.seasonPitchStats;
   const bat = mergedStatsByPlayer(batSource||{})[name];
   const pitch = mergedStatsByPlayer(pitchSource||{})[name];
-  if(!bat && !pitch) return null;
-  const box = el('div','rulesnote');
   const lines = [];
   if(bat && bat.AB>0) lines.push(`AB ${bat.AB} \u00b7 H ${bat.H} \u00b7 HR ${bat.HR} \u00b7 RBI ${bat.RBI} \u00b7 AVG ${fmtAvg(battingAvg(bat))}`);
   if(pitch && pitch.outs>0) lines.push(`IP ${formatIP(pitch.outs)} \u00b7 ERA ${fmtERA(pitchingERA(pitch))} \u00b7 SO ${pitch.SO} \u00b7 W-L ${pitch.W||0}-${pitch.L||0}`);
-  if(!lines.length) return null;
+  return lines.length ? lines : null;
+}
+// This season's accumulated line for a given player name, merged across any team he's stinted with
+// (see mergedStatsByPlayer) — only meaningful in Draft Season or MLB Season, where SEASON persists
+// across games; returns null anywhere else (Pass & Play, Vs Computer, one-off Draft Mode) since
+// there's no season-long stat history to show.
+function renderPlayerSeasonStatsSnippet(name){
+  const lines = getPlayerSeasonStatsLines(name);
+  if(!lines) return null;
+  const usePlayoff = typeof PLAYOFF_MATCH_REF!=='undefined' && !!PLAYOFF_MATCH_REF;
+  const box = el('div','rulesnote');
   box.innerHTML = `<b>${name} \u2014 ${usePlayoff?'Playoff':'Season'} Stats</b><br>${lines.join('<br>')}`;
   return box;
+}
+// Draft Season house rule text: a bench player's current "games off" streak (a start only resets it
+// if he plays at least 6 innings — pinch-hitting doesn't count at all). Shared by the bench swap
+// picker (renderLineupEditPicker) and the pregame roster screen, so both show identical wording.
+// Only meaningful for an actual season game in progress (SEASON_GAME_IDX set) — an exhibition/draft-
+// mode game has no persistent bench-rest tracking to show.
+function getBenchStreakText(t, player){
+  if(SEASON_GAME_IDX===null || t.seasonIdx==null || typeof SEASON==='undefined' || !SEASON || !SEASON.benchRest) return null;
+  const streak = SEASON.benchRest[t.seasonIdx+':'+player.name] || 0;
+  return `${streak} game${streak===1?'':'s'} in a row without a qualifying start (pinch-hit appearances don't count, and a start needs at least 6 innings to reset this)${streak>=3?' \u2014 must start today!':''}.`;
 }
 // optional risky decision (steals, sending a runner for an extra base) — states the offense's and
 // defense's actual numbers up front so the person can judge the odds before tapping through, rather
@@ -9390,9 +9411,8 @@ function renderLineupEditPicker(){
   // bench player's current "games off" streak. A start only counts toward resetting it if they play
   // at least 6 innings — pinch-hitting doesn't count at all.
   if(isBench && SEASON_GAME_IDX!==null && t.seasonIdx!=null && typeof SEASON!=='undefined' && SEASON && SEASON.benchRest){
-    const streak = SEASON.benchRest[t.seasonIdx+':'+player.name] || 0;
-    const streakText = `${streak} game${streak===1?'':'s'} in a row without a qualifying start (pinch-hit appearances don't count, and a start needs at least 6 innings to reset this)${streak>=3?' — must start today!':''}.`;
-    body.appendChild(el('div','rulesnote', streakText));
+    const streakText = getBenchStreakText(t, player);
+    if(streakText) body.appendChild(el('div','rulesnote', streakText));
   }
 
   body.appendChild(el('div','team-label','Subs'));
@@ -9481,6 +9501,8 @@ function renderRosterTeamBlock(wrap, tk){
     }
     row.appendChild(infoCol);
     list.appendChild(row);
+    const statsLines = getPlayerSeasonStatsLines(p.name);
+    if(statsLines) list.appendChild(el('div','prow-substat', statsLines.join(' \u00b7 ')));
   });
   wrap.appendChild(list);
   wrap.appendChild(el('div','rulesnote','Drag \u22ee\u22ee to reorder the batting order (or use \u25b2\u25bc for one spot at a time). Tap a player elsewhere on the row to swap them for another eligible player from this roster before you play.'));
@@ -9493,15 +9515,29 @@ function renderRosterTeamBlock(wrap, tk){
     row.innerHTML = `<div class="pos">${p.pos}</div><div class="nm">${p.name}${p.twoWay?' <span class="twoway-tag">Two-Way</span>':''}</div><div class="sub2">OB ${p.onBase} · SPD ${p.speed} · ${fldTags}</div><div class="editicon">\u270e</div>`;
     row.onclick = ()=>{ LINEUP_EDIT = {team:tk, mode:'bench', name:p.name}; render(); };
     benchList.appendChild(row);
+    const statsLines = getPlayerSeasonStatsLines(p.name);
+    if(statsLines) benchList.appendChild(el('div','prow-substat', statsLines.join(' \u00b7 ')));
+    const streakText = getBenchStreakText(t, p);
+    if(streakText) benchList.appendChild(el('div','prow-substat', streakText));
   });
   wrap.appendChild(benchList);
 
+  // Starting pitcher today: for a locked-rotation game (MLB/Draft Season or a playoff), the real
+  // starter was already decided by cloneTeamForGame before this screen ever loaded and lives at
+  // pitchers[0] — STARTER_PICK stays at its post-reset default of 0 the whole time in that case, so
+  // comparing against it here (instead of the actual locked-in starter) always tagged the ace,
+  // regardless of which rotation turn it actually was. Only an exhibition/draft-mode game (where the
+  // rank picker further down this screen is what sets STARTER_PICK live) should use it here.
+  const isLockedRotation = SEASON_GAME_IDX!==null || PLAYOFF_MATCH_REF!==null;
   wrap.appendChild(el('div','team-label','Rotation'));
   const rotList = el('div','plist'+sideClass);
   t.rotation.forEach((p,i)=>{
     const row = el('div','prow');
-    row.innerHTML = `<div class="pos">P</div><div class="nm">${p.name}${p.twoWay?' <span class="twoway-tag">Two-Way</span>':''}${i===STARTER_PICK?' (starting today)':''}</div><div class="sub2">${p.points} PT · CMD ${p.command} · X${p.xZone}</div>`;
+    const isStartingToday = isLockedRotation ? !!(t.pitchers && t.pitchers[0] && t.pitchers[0].name===p.name) : (i===STARTER_PICK);
+    row.innerHTML = `<div class="pos">P</div><div class="nm">${p.name}${p.twoWay?' <span class="twoway-tag">Two-Way</span>':''}${isStartingToday?' (starting today)':''}</div><div class="sub2">${p.points} PT · CMD ${p.command} · X${p.xZone}</div>`;
     rotList.appendChild(row);
+    const statsLines = getPlayerSeasonStatsLines(p.name);
+    if(statsLines) rotList.appendChild(el('div','prow-substat', statsLines.join(' \u00b7 ')));
   });
   wrap.appendChild(rotList);
 
@@ -9509,8 +9545,11 @@ function renderRosterTeamBlock(wrap, tk){
   const bullList = el('div','plist'+sideClass);
   t.bullpen.forEach(p=>{
     const row = el('div','prow');
-    row.innerHTML = `<div class="pos">P</div><div class="nm">${p.name}${p.twoWay?' <span class="twoway-tag">Two-Way</span>':''}</div><div class="sub2">CMD ${p.command} · X${p.xZone}</div>`;
+    const tired = isSeasonPitcherTired(tk, p);
+    row.innerHTML = `<div class="pos">P</div><div class="nm">${p.name}${p.twoWay?' <span class="twoway-tag">Two-Way</span>':''}${tired?' (Tired)':''}</div><div class="sub2">CMD ${p.command} · X${p.xZone}</div>`;
     bullList.appendChild(row);
+    const statsLines = getPlayerSeasonStatsLines(p.name);
+    if(statsLines) bullList.appendChild(el('div','prow-substat', statsLines.join(' \u00b7 ')));
   });
   wrap.appendChild(bullList);
 
@@ -11326,6 +11365,7 @@ function initiateDP(){
     }
     finishPA(GS, runsIn, bannerText);
     logEntry(GS, `${bannerText}${runsIn>0?` — ${runsIn} run${runsIn>1?'s':''} score!`:''}`);
+    GS.pendingClass = null;
     GS.contestResult = { label:'Double Play Attempt', defLabel:'Infield Defense', defValue, roll, defTotal, offLabel:'Batter Speed (+3)', offValue, bannerClass, bannerText, extraNote };
     GS.stage='dp-result';
     render();
