@@ -90,8 +90,6 @@
   .prow .pos{font-family:'Roboto Mono'; font-size:11px; color:#fff; background:var(--blue); border-radius:4px; padding:2px 5px; width:26px; text-align:center; flex-shrink:0;}
   .prow .nm{flex:1; font-size:14px; font-weight:600;}
   .prow .sub2{font-family:'Roboto Mono'; font-size:10.5px; color:var(--muted); white-space:nowrap;}
-  .prow-substat{font-family:'Roboto Mono'; font-size:10.5px; color:var(--muted); padding:0 10px 6px 44px; margin-top:-4px; white-space:normal;}
-  .roster-side-away .prow-substat, .roster-side-home .prow-substat{color:#fff; opacity:0.85;}
   .twoway-tag{display:inline-block; font-size:9px; font-weight:700; letter-spacing:.02em; color:#fff; background:#7c3aed; border-radius:4px; padding:1px 5px; margin-left:5px; vertical-align:middle;}
   .prow.lineup-editable{cursor:pointer; transition:transform 150ms ease;}
   .prow.lineup-editable:active{background:var(--card-hi);}
@@ -9407,6 +9405,9 @@ function renderLineupEditPicker(){
   cardWrap.appendChild(renderFullCard(player, t, {isPitcher:false}));
   body.appendChild(cardWrap);
 
+  const statsSnippet = renderPlayerSeasonStatsSnippet(player.name);
+  if(statsSnippet) body.appendChild(statsSnippet);
+
   // Draft Season house rule (regular season only — playoffs have no roster restrictions): show a
   // bench player's current "games off" streak. A start only counts toward resetting it if they play
   // at least 6 innings — pinch-hitting doesn't count at all.
@@ -9501,8 +9502,6 @@ function renderRosterTeamBlock(wrap, tk){
     }
     row.appendChild(infoCol);
     list.appendChild(row);
-    const statsLines = getPlayerSeasonStatsLines(p.name);
-    if(statsLines) list.appendChild(el('div','prow-substat', statsLines.join(' \u00b7 ')));
   });
   wrap.appendChild(list);
   wrap.appendChild(el('div','rulesnote','Drag \u22ee\u22ee to reorder the batting order (or use \u25b2\u25bc for one spot at a time). Tap a player elsewhere on the row to swap them for another eligible player from this roster before you play.'));
@@ -9515,10 +9514,6 @@ function renderRosterTeamBlock(wrap, tk){
     row.innerHTML = `<div class="pos">${p.pos}</div><div class="nm">${p.name}${p.twoWay?' <span class="twoway-tag">Two-Way</span>':''}</div><div class="sub2">OB ${p.onBase} · SPD ${p.speed} · ${fldTags}</div><div class="editicon">\u270e</div>`;
     row.onclick = ()=>{ LINEUP_EDIT = {team:tk, mode:'bench', name:p.name}; render(); };
     benchList.appendChild(row);
-    const statsLines = getPlayerSeasonStatsLines(p.name);
-    if(statsLines) benchList.appendChild(el('div','prow-substat', statsLines.join(' \u00b7 ')));
-    const streakText = getBenchStreakText(t, p);
-    if(streakText) benchList.appendChild(el('div','prow-substat', streakText));
   });
   wrap.appendChild(benchList);
 
@@ -9532,24 +9527,22 @@ function renderRosterTeamBlock(wrap, tk){
   wrap.appendChild(el('div','team-label','Rotation'));
   const rotList = el('div','plist'+sideClass);
   t.rotation.forEach((p,i)=>{
-    const row = el('div','prow');
+    const row = el('div','prow clickable');
     const isStartingToday = isLockedRotation ? !!(t.pitchers && t.pitchers[0] && t.pitchers[0].name===p.name) : (i===STARTER_PICK);
     row.innerHTML = `<div class="pos">P</div><div class="nm">${p.name}${p.twoWay?' <span class="twoway-tag">Two-Way</span>':''}${isStartingToday?' (starting today)':''}</div><div class="sub2">${p.points} PT · CMD ${p.command} · X${p.xZone}</div>`;
+    row.onclick = ()=>{ openPlayerCardView(p, t); };
     rotList.appendChild(row);
-    const statsLines = getPlayerSeasonStatsLines(p.name);
-    if(statsLines) rotList.appendChild(el('div','prow-substat', statsLines.join(' \u00b7 ')));
   });
   wrap.appendChild(rotList);
 
   wrap.appendChild(el('div','team-label','Bullpen'));
   const bullList = el('div','plist'+sideClass);
   t.bullpen.forEach(p=>{
-    const row = el('div','prow');
+    const row = el('div','prow clickable');
     const tired = isSeasonPitcherTired(tk, p);
     row.innerHTML = `<div class="pos">P</div><div class="nm">${p.name}${p.twoWay?' <span class="twoway-tag">Two-Way</span>':''}${tired?' (Tired)':''}</div><div class="sub2">CMD ${p.command} · X${p.xZone}</div>`;
+    row.onclick = ()=>{ openPlayerCardView(p, t); };
     bullList.appendChild(row);
-    const statsLines = getPlayerSeasonStatsLines(p.name);
-    if(statsLines) bullList.appendChild(el('div','prow-substat', statsLines.join(' \u00b7 ')));
   });
   wrap.appendChild(bullList);
 
