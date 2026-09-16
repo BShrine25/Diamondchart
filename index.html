@@ -4644,9 +4644,12 @@ function nextAvailablePitcherIdx(gs, fk, fromIdx){
 // fallback below or a manual/CPU pitching change (performPitchingChange). Every pitcher entering
 // mid-game is a reliever for 3-batter-minimum purposes, even a Bulk Pitcher relieving an Opener.
 function startPitcherStint(gs, teamKey){
+  const battingKey = teamKey==='home' ? 'away' : 'home';
+  const runnersOnBase = [0,1,2].filter(i=>!!gs.bases[i]).length;
   gs.pitcherEntry[teamKey] = {
     battersFaced:0, enteredInning:gs.inning, enteredHalf:gs.half,
     lastPitchedInning:gs.inning, lastPitchedHalf:gs.half, isRelief:true,
+    enteredLead: gs.score[teamKey]-gs.score[battingKey], enteredRunnersOnBase: runnersOnBase,
   };
 }
 function maybeSwapPitcher(gs){
@@ -5519,6 +5522,8 @@ function simStep(){
     case 'steal13-defense-choice': GS.stage='steal13-send-home-choice'; return true; // sim default: always throw down
     case 'steal13-send-home-choice': GS.pendingSteal13=null; initiateSteal13(); return true; // sim default: never send the trail runner
     case 'steal13-home-result': { const cb=GS.contestResult.onAdvance; GS.contestResult=null; (cb||afterPlateAppearance)(); return true; }
+    case 'doublesteal12-defense-choice': initiateDoubleSteal12(3); return true; // sim default: always throw for the lead runner
+    case 'doublesteal12-result': GS.contestResult=null; afterPlateAppearance(); return true;
     case 'bunt-attempt1-missed': GS.contestResult=null; runBuntAttempt(); return true;
     case 'bunt-choice': GS.pitchBonus=2; GS.contestResult=null; doThrowPitch(); return true;
     case 'bunt-result': GS.contestResult=null; afterPlateAppearance(); return true;
@@ -7586,7 +7591,18 @@ function determineSavePitcher(gs, winnerKey, winningPitcher){
   const margin = Math.abs(gs.score.away - gs.score.home);
   const line = gs.pitStats[winnerKey][finalPitcherObj.name] || {outs:0};
   const inningsThrown = (line.outs||0)/3;
+  const entry = gs.pitcherEntry[winnerKey];
+  // Rule 9.19(a): a reliever who finishes a win for his team qualifies for a save under ANY of:
+  //   (1) enters with a lead of 3 runs or fewer and pitches at least one inning,
+  //   (2) enters with the potential tying run on base, at bat, or on deck — no innings-pitched
+  //       minimum at all here, which is exactly the short, high-leverage appearance (often well
+  //       under a full inning) that the innings-based checks below can never satisfy on their own.
+  //       Approximated as: the lead at entry was small enough that it's covered by the runners
+  //       already on base (tying run on base) plus the batter (at bat) plus the next hitter (on
+  //       deck) — i.e. lead <= runnersOnBase + 2.
+  //   (3) pitches at least three innings, however he entered.
   if(margin<=3 && inningsThrown>=1) return finalPitcherObj.name;
+  if(entry && entry.enteredLead>0 && entry.enteredLead<=entry.enteredRunnersOnBase+2) return finalPitcherObj.name;
   if(inningsThrown>=3) return finalPitcherObj.name;
   return null;
 }
@@ -9923,7 +9939,7 @@ function renderGame(){
   // point would still be pointing at whoever's PREVIOUS at-bat concluded, showing the wrong batter
   // entirely (the person actually standing at the plate right now, mid-count, gets bumped off their
   // own card by whoever hit last).
-  const freshBatterStages = ['defense-choice','offense-choice','pitch-rolling','pitch-thrown','swing-rolling','steal-defense-throw','steal-rolling','steal-result','steal13-defense-choice','steal13-send-home-choice','steal13-home-rolling','steal13-home-result','abs-challenge-offer','abs-challenge-rolling','abs-challenge-result','squeeze-foul-choice','squeeze-rolling','squeeze-defense-choice','squeeze-home-rolling','squeeze-miss-result'];
+  const freshBatterStages = ['defense-choice','offense-choice','pitch-rolling','pitch-thrown','swing-rolling','steal-defense-throw','steal-rolling','steal-result','steal13-defense-choice','steal13-send-home-choice','steal13-home-rolling','steal13-home-result','doublesteal12-defense-choice','doublesteal12-rolling','doublesteal12-result','abs-challenge-offer','abs-challenge-rolling','abs-challenge-result','squeeze-foul-choice','squeeze-rolling','squeeze-defense-choice','squeeze-home-rolling','squeeze-miss-result'];
   const stillShowingLastPA = GS.lastResolved && !freshBatterStages.includes(GS.stage);
   const displayBatter = stillShowingLastPA ? GS.lastResolved.batter : currentBatter(GS);
   vs.appendChild(renderFullCard(displayBatter, TEAMS[battingTeamKey(GS)], {isPitcher:false, onBaseBonus: GS.onBaseBonus}));
@@ -9993,6 +10009,7 @@ function renderDecisionFlow(m){
   const canInfieldIn = !!GS.bases[2] && GS.outs<2;
   const canSteal2 = !!GS.bases[0] && !GS.bases[1] && !isPositionPlayerPitching(GS);
   const canSteal3 = !!GS.bases[1] && !GS.bases[2] && !isPositionPlayerPitching(GS);
+  const canDoubleSteal12 = !!GS.bases[0] && !!GS.bases[1] && !GS.bases[2] && !isPositionPlayerPitching(GS);
   const canSqueeze = !!GS.bases[2] && GS.outs<2;
   const canHitAndRun = !!GS.bases[0] && !GS.bases[1] && !isPositionPlayerPitching(GS);
 
@@ -10018,7 +10035,7 @@ function renderDecisionFlow(m){
       return;
     case 'offense-choice': {
       let shown = false;
-      if(isHumanControls(tk)){ renderOffenseChoice(m, runnerOnBase, canSteal2, canSteal3, canSqueeze, canHitAndRun); shown = true; }
+      if(isHumanControls(tk)){ renderOffenseChoice(m, runnerOnBase, canSteal2, canSteal3, canDoubleSteal12, canSqueeze, canHitAndRun); shown = true; }
       if(isHumanControls(fk)){ renderDefenseReadyToPitch(m); shown = true; }
       if(!shown) return; // maybeAutoAdvance() (called at the end of render()) will fire doThrowPitch via setTimeout for a genuine CPU opponent, or show a waiting message for an online one
       return;
@@ -10055,6 +10072,9 @@ function renderDecisionFlow(m){
     case 'steal13-send-home-choice': renderSteal13SendHomeChoice(m); return;
     case 'steal13-home-rolling': renderRollingDie(m, 'Infield Defense Roll'); return;
     case 'steal13-home-result': renderContestResult(m); return;
+    case 'doublesteal12-defense-choice': renderDoubleSteal12DefenseChoice(m); return;
+    case 'doublesteal12-rolling': renderRollingDie(m, 'Battery Defense Roll'); return;
+    case 'doublesteal12-result': renderContestResult(m); return;
     case 'bunt-rolling': renderRollingDie(m, `Bunt Attempt ${GS.buntAttempt} Roll`); return;
     case 'bunt-attempt1-missed': renderBuntAttempt1Missed(m); return;
     case 'bunt-choice': renderBuntChoice(m); return;
@@ -10179,7 +10199,7 @@ function renderSwitchPositions(m){
   m.appendChild(dz);
 }
 
-function renderOffenseChoice(m, runnerOnBase, canSteal2, canSteal3, canSqueeze, canHitAndRun){
+function renderOffenseChoice(m, runnerOnBase, canSteal2, canSteal3, canDoubleSteal12, canSqueeze, canHitAndRun){
   const tk=battingTeamKey(GS);
   const dz = el('div','decision');
   dz.innerHTML = `<div class="lbl">Offense: ${TEAMS[tk].nick}</div>`;
@@ -10201,6 +10221,7 @@ function renderOffenseChoice(m, runnerOnBase, canSteal2, canSteal3, canSqueeze, 
   }
   if(canSteal2){ const s=el('button','btn small blueline','Steal 2nd'); s.onclick=()=>confirmSteal(2); row.appendChild(s); }
   if(canSteal3){ const s=el('button','btn small blueline','Steal 3rd'); s.onclick=()=>confirmSteal(3); row.appendChild(s); }
+  if(canDoubleSteal12){ const ds=el('button','btn small blueline','Double Steal'); ds.onclick=confirmDoubleSteal12; row.appendChild(ds); }
   if(runnerOnBase && GS.outs<2){
     const bnt=el('button','btn small secondary','Sac Bunt');
     bnt.onclick = ()=>{ CONFIRM_STATE = { message: 'Attempt a sacrifice bunt?', onConfirm: initiateBunt }; render(); };
@@ -11152,13 +11173,15 @@ function initiateSteal13HomePlay(penalty, thirdRunnerName){
     let runsIn = 0, bannerText, bannerClass;
     if(success){
       bases[2]=null; runsIn=1;
+      creditBat(GS, tk, thirdRunnerName, 'SB');
       creditBat(GS, tk, thirdRunnerName, 'R');
       addRuns(GS, tk, 1);
       const pitcherName = currentPitcher(GS).name;
       creditRunsEarned(GS, fk, pitcherName, [thirdRunnerName]);
-      bannerText = `${thirdRunnerName} scores on the front end of the steal!`; bannerClass='hit';
+      bannerText = `${thirdRunnerName} scores on the back end of the steal!`; bannerClass='hit';
     } else {
       bases[2]=null; GS.outs+=1; GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, currentPitcher(GS).name, 'outs');
+      creditBat(GS, tk, thirdRunnerName, 'CS');
       bannerText = `${thirdRunnerName} thrown out at the plate!`; bannerClass='out';
     }
     GS.bases=bases;
@@ -11223,6 +11246,83 @@ function initiateSteal(base){
       bannerClass: success?'hit':'out', bannerText: success?'Safe!':'Caught Stealing',
     };
     GS.stage='steal-result';
+    render();
+  });
+}
+// --- 1st-and-2nd house rule (double steal, both runners break at once) ---
+// Unlike the 1st-and-3rd version above, there's no separate "does the defense even contest it" step
+// and no separate offense follow-up choice — both runners are already committed the moment the
+// offense sends them. Everything the defense needs to weigh (both runners' speed against the same
+// Battery Defense number, with the usual +3 bonus if the throw goes to 3rd) is shown on one screen,
+// and their only decision is which base to actually throw to — a catcher can only make one throw, so
+// whichever runner isn't the target is automatically safe.
+function confirmDoubleSteal12(){
+  const tk = battingTeamKey(GS);
+  const runnerTo2nd = GS.bases[0], runnerTo3rd = GS.bases[1];
+  CONFIRM_STATE = {
+    message: `Send ${runnerTo2nd} and ${runnerTo3rd} on a double steal? The defense can only throw to one base — the other runner is safe no matter what.`,
+    onConfirm: ()=>{ GS.stage='doublesteal12-defense-choice'; render(); },
+  };
+  render();
+}
+function renderDoubleSteal12DefenseChoice(m){
+  const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
+  const runnerTo2nd = GS.bases[0], runnerTo3rd = GS.bases[1];
+  const defBase = TEAMS[fk].defense.battery+fielderBonus(fk,'C');
+  const speedTo2nd = runnerSpeed(tk, runnerTo2nd);
+  const speedTo3rd = runnerSpeed(tk, runnerTo3rd);
+  const dz = el('div','decision');
+  dz.innerHTML = `<div class="lbl">Double Steal — ${runnerTo2nd} to 2nd, ${runnerTo3rd} to 3rd</div>
+    <div class="rulesnote">Battery Defense: <b>${defBase}</b> (+3 if the throw goes to 3rd)</div>
+    <div class="rulesnote">${runnerTo2nd}'s Speed (to 2nd): <b>${speedTo2nd}</b> &nbsp;|&nbsp; ${runnerTo3rd}'s Speed (to 3rd): <b>${speedTo3rd}</b></div>
+    <div class="rulesnote">One throw only — whichever runner you don't throw at is automatically safe.</div>`;
+  m.appendChild(dz);
+  const throwTo = (target)=>{ initiateDoubleSteal12(target); };
+  if(isHumanControls(fk)){
+    const row = el('div','btnrow');
+    const b2 = el('button','btn small blueline','Throw to 2nd'); b2.onclick=()=>throwTo(2);
+    const b3 = el('button','btn small blueline','Throw to 3rd'); b3.onclick=()=>throwTo(3);
+    row.appendChild(b2); row.appendChild(b3);
+    dz.appendChild(row);
+  } else {
+    autoAdvanceOrWait(dz, fk, ()=>throwTo(3), 'Waiting for the defense to decide where to throw\u2026'); // sim default: always go for the lead runner
+  }
+}
+function initiateDoubleSteal12(target){
+  const fk=fieldingTeamKey(GS), tk=battingTeamKey(GS);
+  const runnerTo2nd = GS.bases[0], runnerTo3rd = GS.bases[1];
+  const bonus = target===3?3:0;
+  const defValue = TEAMS[fk].defense.battery+bonus+fielderBonus(fk,'C');
+  const targetRunner = target===2?runnerTo2nd:runnerTo3rd;
+  const otherRunner = target===2?runnerTo3rd:runnerTo2nd;
+  const offValue = runnerSpeed(tk, targetRunner);
+  startDieRoll(20, 'doublesteal12-rolling', (roll)=>{
+    const defTotal = defValue+roll;
+    const success = offValue >= defTotal; // 3.11.A: tie goes to Offense on a Throw
+    const bases = GS.bases.slice();
+    bases[0]=null; bases[1]=null;
+    // The runner NOT thrown at always makes it — the catcher only gets the one throw — so he's safe
+    // and credited a stolen base regardless of how the target's own throw turns out.
+    if(target===2){ bases[2]=runnerTo3rd; } else { bases[1]=runnerTo2nd; }
+    creditBat(GS, tk, otherRunner, 'SB');
+    if(success){
+      if(target===2){ bases[1]=runnerTo2nd; } else { bases[2]=runnerTo3rd; }
+      creditBat(GS, tk, targetRunner, 'SB');
+      logEntry(GS, `Double steal! <b>${runnerTo2nd}</b> to 2nd, <b>${runnerTo3rd}</b> to 3rd — the throw to ${target===2?'2nd':'3rd'} wasn't in time.`);
+    } else {
+      GS.outs+=1; GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, currentPitcher(GS).name, 'outs');
+      creditBat(GS, tk, targetRunner, 'CS');
+      logEntry(GS, `Double steal — <b>${targetRunner}</b> caught stealing ${target===2?'2nd':'3rd'}, <b>${otherRunner}</b> safe at ${target===2?'3rd':'2nd'}.`);
+    }
+    GS.bases=bases;
+    GS.contestResult = {
+      label:`Double Steal — Defense Throws to ${target===2?'2nd':'3rd'}`,
+      defLabel:'Battery Defense'+(bonus?' (+3 vs 3rd)':''), defValue, roll, defTotal,
+      offLabel:`${targetRunner}'s Speed`, offValue,
+      bannerClass: success?'hit':'out', bannerText: success?'Both Safe!':`${targetRunner} Caught Stealing`,
+      extraNote: success?'':`${otherRunner} still moves up safely on the throw.`,
+    };
+    GS.stage='doublesteal12-result';
     render();
   });
 }
