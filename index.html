@@ -5190,11 +5190,12 @@ function checkHalfInningOver(gs){
     gs.outs=0; gs.infieldIn=false; gs.onBaseBonus=0;
     if(gs.half==='top'){ gs.half='bottom'; } else {
       gs.inning+=1; gs.half='top';
-      // House rule: ABS Challenge — both sides get +1 challenge for every inning of extra innings,
-      // granted once per new inning number reached (not once per half).
+      // House rule: ABS Challenge — starting the 10th, challenges reset to exactly 1 per side for
+      // every inning the game continues, rather than accumulating. Whatever was left over from the
+      // first 9 innings does NOT carry into it — this is a hard reset each inning, not an addition.
       if(gs.inning > gs.absExtraInningsGranted){
-        gs.absChallenges.away += 1;
-        gs.absChallenges.home += 1;
+        gs.absChallenges.away = 1;
+        gs.absChallenges.home = 1;
         gs.absExtraInningsGranted = gs.inning;
       }
     }
@@ -5210,8 +5211,12 @@ function checkHalfInningOver(gs){
 // real official scoring gives a manufactured/automatic runner — so gs.ghostRunner tracks his name for
 // the rest of THIS half-inning so his run (if he scores) can be credited as unearned. He's cleared
 // automatically the moment the half-inning changes, since extraInningGhostRunner runs again right then.
+// House rule: the playoffs AND the standalone tournament bracket never use the ghost runner, regardless
+// of game mode — extra innings in either are played straight, nobody starts on base.
 function extraInningGhostRunner(gs){
-  if(gs.inning<10){ gs.ghostRunner=null; return [null,null,null]; }
+  const inBracket = (typeof PLAYOFF_MATCH_REF!=='undefined' && PLAYOFF_MATCH_REF!==null) ||
+                     (typeof TOURNEY_MATCH_REF!=='undefined' && TOURNEY_MATCH_REF!==null);
+  if(gs.inning<10 || inBracket){ gs.ghostRunner=null; return [null,null,null]; }
   const tk = battingTeamKey(gs);
   const lineup = TEAMS[tk].lineup;
   const idx = (gs.lineupIdx[tk]-1+lineup.length)%lineup.length;
@@ -5742,6 +5747,7 @@ function simStep(){
       return true;
     }
     case 'tagup-result': GS.contestResult=null; afterPlateAppearance(); return true;
+    case 'tagup-timeplay-result': { const onAdvance = GS.contestResult.onAdvance; GS.contestResult=null; (onAdvance||afterPlateAppearance)(); return true; }
     case 'infieldin-gb-choice': initiateInfieldInGB(true); return true; // sim default: always send [SIMPLIFIED]
     case 'infieldin-gb-result': GS.contestResult=null; afterPlateAppearance(); return true;
     case 'extrabase-choice': answerExtraBaseStep(true); return true;
@@ -10877,6 +10883,8 @@ function renderDecisionFlow(m){
     case 'tagup-defense-throw': renderTagupDefenseThrow(m); return;
     case 'tagup-defense-pick': renderTagupDefensePick(m); return;
     case 'tagup-rolling': renderRollingDie(m, 'Outfield Defense Roll'); return;
+    case 'tagup-timeplay-rolling': renderRollingDie(m, '3rd-Out Time Play \u2014 Does the Run Count?'); return;
+    case 'tagup-timeplay-result': renderContestResult(m); return;
     case 'tagup-result': renderContestResult(m); return;
     case 'extrabase-choice': renderExtraBaseChoice(m); return;
     case 'extrabase-defense-throw': renderExtraBaseDefenseThrow(m); return;
@@ -12790,24 +12798,17 @@ function resolveContestedTagUp(contested, autoSafeOthers){
 
     let otherText = '';
     // House rule: if the throw that just got someone out was aimed at a TRAILING runner (any base
-    // other than home) — not the runner who was actually racing for the plate — then that other
-    // runner's run isn't automatic anymore. The out elsewhere makes it a close, ambiguous play at
-    // the plate rather than a clean score, decided by a roll instead: 1\u201310 the run does NOT count,
-    // 11\u201320 it does. If the contested throw was AT home instead, or nobody was thrown out at all,
-    // none of this applies — an auto-safe runner scores exactly as it always has.
-    const closePlayAtPlate = thrownOut && contested.toBase!=='home';
+    // other than home) — not the runner who was actually racing for the plate — that only puts the
+    // OTHER runner's run in doubt if this out is actually the 3RD out of the inning (a real "time
+    // play": the inning ended before or simultaneous with him touching home). If the side isn't out
+    // yet, the run counts automatically no matter what else happened on the same play — matching
+    // actual baseball rules, where a run scores freely on any out that isn't the third.
+    const closePlayAtPlate = thrownOut && contested.toBase!=='home' && GS.outs>=3;
+    const timePlayQueue = [];
     autoSafeOthers.forEach(c=>{
       if(c.toBase==='home'){
         if(closePlayAtPlate){
-          const runRoll = Math.floor(Math.random()*20)+1;
-          if(runRoll>=11){
-            runsIn+=1; scoredFromThird=true;
-            creditBat(GS, tk, c.runnerName, 'R');
-            creditRunsEarned(GS, fk, pitcherName, [c.runnerName]);
-            otherText += ` Close play at the plate for ${c.runnerName} \u2014 safe! (rolled ${runRoll})`;
-          } else {
-            otherText += ` Close play at the plate for ${c.runnerName} \u2014 the run does not count (rolled ${runRoll}).`;
-          }
+          timePlayQueue.push(c); // needs its own visible roll — handled after this one, in sequence
         } else {
           runsIn+=1; scoredFromThird=true;
           creditBat(GS, tk, c.runnerName, 'R');
@@ -12821,19 +12822,51 @@ function resolveContestedTagUp(contested, autoSafeOthers){
       }
     });
 
-    // 3.12.D: a run scoring from 3rd on a tag credits the batter a Sacrifice Fly (no AB) and an RBI;
-    // otherwise this was just an ordinary flyout (AB, no RBI) regardless of what any runner did.
-    if(scoredFromThird){ creditBat(GS, tk, batterName, 'RBI'); creditBat(GS, tk, batterName, 'SAC'); }
-    else creditBat(GS, tk, batterName, 'AB');
-
-    GS.bases = bases;
-    GS.pendingClass = null; GS.tagUp = null;
-    finishPA(GS, runsIn, bannerText+otherText);
-    logEntry(GS, bannerText+otherText);
-    GS.contestResult = { label:`Tag-Up Attempt \u2014 Runner to ${contested.toBase==='home'?'Home':contested.toBase}`, defLabel:'Outfield Defense', defValue, roll, defTotal, offLabel:'Runner Speed (+situational)', offValue, bannerClass, bannerText: bannerText+otherText, extraNote:'' };
-    GS.stage='tagup-result';
+    const state = { batterName, fk, tk, pitcherName, bases, runsIn, scoredFromThird, bannerText, bannerClass, otherText,
+      throwDisplay: { label:`Tag-Up Attempt \u2014 Runner to ${contested.toBase==='home'?'Home':contested.toBase}`, defLabel:'Outfield Defense', defValue, roll, defTotal, offLabel:'Runner Speed (+situational)', offValue } };
+    resolveTimePlayQueue(timePlayQueue, 0, state);
+  });
+}
+// Runs the "does the run count?" roll for each home-bound auto-safe runner caught up in a genuine
+// 3rd-out time play, one at a time, each with its own visible die roll and a clear result banner —
+// rather than settling it silently in the background. Recurses until the queue is empty, then finishes
+// the play exactly as resolveContestedTagUp used to do directly.
+function resolveTimePlayQueue(queue, idx, state){
+  if(idx >= queue.length){ return finishTagUpPlay(state); }
+  const c = queue[idx];
+  const { fk, tk, pitcherName } = state;
+  startDieRoll(20, 'tagup-timeplay-rolling', (runRoll)=>{
+    let resultText, resultClass;
+    if(runRoll>=11){
+      state.runsIn+=1; state.scoredFromThird=true;
+      creditBat(GS, tk, c.runnerName, 'R');
+      creditRunsEarned(GS, fk, pitcherName, [c.runnerName]);
+      resultText = `${c.runnerName} is SAFE \u2014 the run counts!`;
+      resultClass = 'hit';
+    } else {
+      resultText = `${c.runnerName} is OUT on the time play \u2014 the run does NOT count.`;
+      resultClass = 'out';
+    }
+    state.otherText += ` Time play at the plate for ${c.runnerName} (rolled ${runRoll}, needed 11+): ${resultText}`;
+    GS.contestResult = { label:`3rd-Out Time Play \u2014 ${c.runnerName} at the Plate`, defLabel:'Needed', defValue:'11+', roll:runRoll, defTotal:runRoll, offLabel:'Result', offValue: runRoll>=11?'Run Counts':'Run Does Not Count', bannerClass:resultClass, bannerText:resultText, extraNote:'A runner is thrown out elsewhere for the 3rd out of the inning while another runner is simultaneously racing home \u2014 whether he beat the 3rd out is genuinely unclear, so it comes down to this roll.', onAdvance: ()=>resolveTimePlayQueue(queue, idx+1, state) };
+    GS.stage='tagup-timeplay-result';
     render();
   });
+}
+function finishTagUpPlay(state){
+  const { batterName, fk, tk, bases, runsIn, scoredFromThird, bannerText, bannerClass, otherText, throwDisplay } = state;
+  // 3.12.D: a run scoring from 3rd on a tag credits the batter a Sacrifice Fly (no AB) and an RBI;
+  // otherwise this was just an ordinary flyout (AB, no RBI) regardless of what any runner did.
+  if(scoredFromThird){ creditBat(GS, tk, batterName, 'RBI'); creditBat(GS, tk, batterName, 'SAC'); }
+  else creditBat(GS, tk, batterName, 'AB');
+
+  GS.bases = bases;
+  GS.pendingClass = null; GS.tagUp = null;
+  finishPA(GS, runsIn, bannerText+otherText);
+  logEntry(GS, bannerText+otherText);
+  GS.contestResult = { ...throwDisplay, bannerClass, bannerText: bannerText+otherText, extraNote:'' };
+  GS.stage='tagup-result';
+  render();
 }
 
 /* ---------------- EXTRA BASES AFTER A HIT (3.12.B) ---------------- */
@@ -13079,6 +13112,10 @@ function initiateBunt(){
 function runBuntAttempt(){
   GS.buntAttempt += 1;
   startDieRoll(20, 'bunt-rolling', (roll)=>{
+    // House rule: only a natural 20 beats the bunt out entirely for a hit with no possible defensive
+    // play — every other successful roll (13-19) is still a normal sacrifice bunt (batter out, runners
+    // advance one base, nobody can score from 3rd).
+    if(roll===20){ applyBuntSingle(roll); return; }
     const success = roll>12; // tie(12) goes to Defense
     if(success){ applyBuntSuccess(roll); return; }
     if(GS.buntAttempt===1){
@@ -13095,6 +13132,36 @@ function runBuntAttempt(){
       applyBuntStrikeout(roll);
     }
   });
+}
+// House rule: a natural 20 on any bunt attempt beats it out for a single instead of a sacrifice —
+// no out, batter reaches 1st, and everyone on base advances exactly one base (same baseline advance
+// as an ordinary single elsewhere in the engine), including a runner on 3rd scoring — unlike a normal
+// sac bunt, which can never send a runner home. No defensive play can be made on anyone on this roll.
+function applyBuntSingle(roll){
+  const b = currentBatter(GS);
+  const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
+  const pitcherName = currentPitcher(GS).name;
+  const bases = GS.bases.slice();
+  let runsIn = 0;
+  const scorers = [];
+  if(bases[2]){ scorers.push(bases[2]); runsIn+=1; bases[2]=null; }
+  if(bases[1]){ bases[2]=bases[1]; bases[1]=null; }
+  if(bases[0]){ bases[1]=bases[0]; }
+  bases[0]=b.name;
+  GS.bases=bases;
+  GS.runnerCredit[b.name] = pitcherName;
+  creditBat(GS, tk, b.name, 'AB'); creditBat(GS, tk, b.name, 'H'); creditPitch(GS, fk, pitcherName, 'H');
+  if(scorers.length){
+    creditBat(GS, tk, b.name, 'RBI');
+    creditRunsEarned(GS, fk, pitcherName, scorers);
+    scorers.forEach(name=>creditBat(GS, tk, name, 'R'));
+  }
+  const scoreNote = scorers.length ? ` ${scorers.join(' and ')} score${scorers.length>1?'':'s'}!` : '';
+  finishPA(GS, runsIn, 'Bunt Single');
+  logEntry(GS, `<b>${b.name}</b> beats it out for a bunt single (natural 20)!${scoreNote}`);
+  GS.contestResult = { label:`Sac Bunt Attempt ${GS.buntAttempt} \u2014 Natural 20!`, defLabel:'Needed', defValue:'>12', roll, defTotal:roll, offLabel:'Result', offValue:'Bunt Single!', bannerClass:'hit', bannerText:'Bunt Single!'+scoreNote, extraNote:'House rule: a natural 20 beats it out for a hit \u2014 a runner on 3rd can score, unlike a sac bunt, with no defensive play possible on anyone.' };
+  GS.stage='bunt-result';
+  render();
 }
 // Shown after a missed 1st attempt — the offense has to explicitly choose to try again rather than
 // it auto-continuing on a timer, same principle as the 2nd-attempt choice (bunt-choice) just below,
