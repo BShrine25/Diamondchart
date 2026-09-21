@@ -4860,7 +4860,7 @@ function startPitcherStint(gs, teamKey){
 // or held all the way to either the next pitching change or the end of the game. Returns per-team
 // lists of {name} for blown saves and for holds — a "hold" is any such stint that was never blown AND
 // isn't the one stint that ends up earning the save itself (that's credited separately, as a save).
-function computeSaveSituationOutcomes(gs, savePitcherName, saveTeamKey){
+function computeSaveSituationOutcomes(gs, savePitcherName, saveTeamKey, winningPitcher, losingPitcher){
   const result = { blown: {home:[], away:[]}, held: {home:[], away:[]} };
   if(!gs.pitcherStints) return result;
   ['home','away'].forEach(tk=>{
@@ -4878,9 +4878,14 @@ function computeSaveSituationOutcomes(gs, savePitcherName, saveTeamKey){
         const theirs = tk==='home' ? e.awayScore : e.homeScore;
         if(theirs>=mine){ blown = true; break; }
       }
+      // Blowing a save and taking the loss for that same outing are NOT mutually exclusive in real
+      // baseball (it's the common case, in fact) — so blown-save credit still applies even if this
+      // pitcher is also the game's losing pitcher of record.
       if(blown){ result.blown[tk].push(stint.name); return; }
-      // Not blown — a hold, UNLESS this exact stint is the one being credited the save (that pitcher
-      // is still the one on the mound with no stint after him, and he's the team that won).
+      // A hold, on the other hand, specifically means "protected the lead but ISN'T part of the
+      // decision" — so it's mutually exclusive with being the winning OR losing pitcher of record,
+      // as well as with being the credited save pitcher (checked separately below).
+      if(stint.name===winningPitcher || stint.name===losingPitcher) return;
       const isTheSavePitcher = (tk===saveTeamKey) && (stint.name===savePitcherName) && !nextStint;
       if(!isTheSavePitcher) result.held[tk].push(stint.name);
     });
@@ -7704,7 +7709,7 @@ function accumulateGameStats(gs, awayIdx, homeIdx, isPlayoff){
     // Blown saves and holds — reconstructed from the full stint history against the run log, so every
     // reliever who ever entered in a save situation this game is accounted for, not just whoever
     // happened to finish it. See computeSaveSituationOutcomes.
-    const outcomes = computeSaveSituationOutcomes(gs, wls.savePitcher, gs.winner);
+    const outcomes = computeSaveSituationOutcomes(gs, wls.savePitcher, gs.winner, wls.winningPitcher, wls.losingPitcher);
     ['home','away'].forEach(tk=>{
       const teamIdx = tk==='away' ? awayIdx : homeIdx;
       if(teamIdx==null) return;
@@ -8069,6 +8074,15 @@ function importSeasonFile(file){
 // engine doesn't model, e.g. the starter-must-complete-5-innings exception for the win). Walks the
 // run log (see addRuns) to find the LAST point the eventual winner took a lead it never gave back;
 // whoever was pitching for each side at that exact moment is credited as the winning/losing pitcher.
+// Win/Loss determination (Rulebook / MLB Rule 10.17): the "decisive lead" is the point after which
+// the eventual winning team held the lead outright for the rest of the game — critically, a TIE also
+// breaks that streak, not just falling behind. A team that leads 5-3, gets tied 5-5, then goes ahead
+// 6-5 for good did NOT decide the game at the 5-3 mark — the pitcher in at that first 5-3 moment gets
+// no decision at all; the pitcher in when it went 6-5 is the one who gets the loss/win credit.
+// A starting pitcher must have completed at least 5 innings (15 outs) to be awarded the win even if he
+// was the pitcher of record at the decisive moment; if he falls short, the win passes to whichever
+// reliever threw the most innings for the winning team (MLB leaves this to scorer judgment — "most
+// innings" is the standard deterministic stand-in). No such innings minimum applies to a loss.
 function determineWinLossPitchers(gs){
   if(!gs.gameOver || !gs.runLog || gs.runLog.length===0) return null;
   const winnerKey = gs.winner, loserKey = winnerKey==='away' ? 'home' : 'away';
@@ -8078,18 +8092,37 @@ function determineWinLossPitchers(gs){
     const winnerScore = winnerKey==='away' ? entry.awayScore : entry.homeScore;
     const loserScore = winnerKey==='away' ? entry.homeScore : entry.awayScore;
     if(winnerScore>loserScore){
-      let everTrailedAgain = false;
+      let brokenLater = false;
       for(let j=i+1;j<gs.runLog.length;j++){
         const laterWinner = winnerKey==='away' ? gs.runLog[j].awayScore : gs.runLog[j].homeScore;
         const laterLoser = winnerKey==='away' ? gs.runLog[j].homeScore : gs.runLog[j].awayScore;
-        if(laterWinner<laterLoser){ everTrailedAgain = true; break; }
+        if(laterWinner<=laterLoser){ brokenLater = true; break; } // tie OR trailing both invalidate it
       }
-      if(!everTrailedAgain){ deciding = entry; break; }
+      if(!brokenLater){ deciding = entry; break; }
     }
   }
   if(!deciding) return null;
-  const winningPitcher = winnerKey==='away' ? deciding.awayPitcher : deciding.homePitcher;
+  let winningPitcher = winnerKey==='away' ? deciding.awayPitcher : deciding.homePitcher;
   const losingPitcher = loserKey==='away' ? deciding.awayPitcher : deciding.homePitcher;
+  // Starter-innings qualification: if the candidate winning pitcher was that team's starter and didn't
+  // complete 5 innings, reassign the win to whichever of that team's relievers pitched the most innings.
+  const winnerRoster = TEAMS[winnerKey].pitchers;
+  const candidateObj = winnerRoster.find(p=>p.name===winningPitcher);
+  const isStarter = candidateObj && candidateObj.role==='SP';
+  if(isStarter){
+    const candLine = gs.pitStats[winnerKey][winningPitcher] || {outs:0};
+    if((candLine.outs||0) < 15){
+      let best = null, bestOuts = -1;
+      Object.keys(gs.pitStats[winnerKey]).forEach(name=>{
+        if(name===winningPitcher) return;
+        const p = winnerRoster.find(x=>x.name===name);
+        if(!p || p.role!=='RP') return;
+        const outs = gs.pitStats[winnerKey][name].outs||0;
+        if(outs>bestOuts){ bestOuts=outs; best=name; }
+      });
+      if(best) winningPitcher = best;
+    }
+  }
   const savePitcher = determineSavePitcher(gs, winnerKey, winningPitcher);
   return { winningPitcher, losingPitcher, savePitcher };
 }
