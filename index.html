@@ -2289,12 +2289,66 @@ function P(name,IP,ERA,H,HR,BB,SO,BF,GS,G,override){
 function team(city, nick, defense, lineup, bench, rotation, bullpen, color, abbr){
   return { city, nick, defense, lineup, bench, rotation, bullpen, pitchers:[rotation[0], ...bullpen], color, abbr };
 }
+// Reassigns fielding positions across a fixed 9-man starting lineup for the best possible defense —
+// batting ORDER (who hits where) never changes, only WHICH of the 8 field positions each of the 9
+// guys plays (with exactly one of them left at DH). This is an exact search, not a greedy heuristic:
+// for each of the 9 possible DH choices, it finds the truly optimal one-to-one assignment of the
+// remaining 8 players to the 8 positions (maximizing total fielding rating, respecting eligibility)
+// via exhaustive permutation with pruning — small enough (at most 8! per DH choice) to run instantly,
+// and eligibility restrictions prune the vast majority of branches in practice. A player with no
+// explicit rating at an eligible position is treated as a neutral 0, matching how a 0 rating already
+// reads elsewhere in the data. Only applies to the game's built-in default rosters — a lineup a user
+// built by hand in Draft Mode already reflects deliberate position choices and is never touched here.
+function bestDefensiveAlignment(startingNine){
+  const positions = ['C','1B','2B','3B','SS','LF','CF','RF'];
+  function ratingFor(player, pos){
+    if(!eligibleFor(player, pos)) return null;
+    const r = fieldingRatingFor(player, pos);
+    return r===null ? 0 : r;
+  }
+  function bestAssignmentFor(players){
+    const n = players.length;
+    let best = null, bestTotal = -Infinity;
+    const used = new Array(n).fill(false);
+    const current = new Array(positions.length);
+    function recurse(posIdx, runningTotal){
+      if(posIdx === positions.length){
+        if(runningTotal > bestTotal){ bestTotal = runningTotal; best = current.slice(); }
+        return;
+      }
+      const pos = positions[posIdx];
+      for(let i=0;i<n;i++){
+        if(used[i]) continue;
+        const r = ratingFor(players[i], pos);
+        if(r===null) continue;
+        used[i]=true; current[posIdx]=i;
+        recurse(posIdx+1, runningTotal+r);
+        used[i]=false;
+      }
+    }
+    recurse(0,0);
+    return best ? { total: bestTotal, assignment: best } : null;
+  }
+  let bestTotal = -Infinity, bestDhIdx = null, bestAssign = null;
+  for(let dhIdx=0; dhIdx<startingNine.length; dhIdx++){
+    const fielders = startingNine.filter((_,i)=>i!==dhIdx);
+    const result = bestAssignmentFor(fielders);
+    if(result && result.total > bestTotal){
+      bestTotal = result.total; bestDhIdx = dhIdx; bestAssign = result.assignment;
+    }
+  }
+  if(bestDhIdx===null) return startingNine; // no legal full assignment exists (shouldn't happen with real rosters) — leave as-is
+  const fielders = startingNine.filter((_,i)=>i!==bestDhIdx);
+  const posOf = new Map(); // player object -> assigned position
+  bestAssign.forEach((playerIdx, posIdx)=>{ posOf.set(fielders[playerIdx], positions[posIdx]); });
+  return startingNine.map((p,i)=> i===bestDhIdx ? Object.assign({}, p, {pos:'DH'}) : Object.assign({}, p, {pos: posOf.get(p)}));
+}
 // Deep-enough clone for a live game: player objects get copied (so position/roster
 // swaps don't affect TEAM_POOL), but each player's own chart array is left shared
 // since it's never mutated.
 function cloneTeamForGame(poolTeam, starterIdx, seasonIdx){
   const clonePlayer = p => Object.assign({}, p);
-  const lineup = poolTeam.lineup.map(clonePlayer);
+  const lineup = bestDefensiveAlignment(poolTeam.lineup.map(clonePlayer));
   const bench = poolTeam.bench.map(clonePlayer);
   const rotation = poolTeam.rotation.map(clonePlayer);
   const bullpen = poolTeam.bullpen.map(clonePlayer);
@@ -2312,7 +2366,7 @@ function cloneTeamForGame(poolTeam, starterIdx, seasonIdx){
 // arm, just entering through the rotation instead of the bullpen.
 function cloneTeamForPlayoffGame(poolTeam, starterIdx, seasonIdx){
   const clonePlayer = p => Object.assign({}, p);
-  const lineup = poolTeam.lineup.map(clonePlayer);
+  const lineup = bestDefensiveAlignment(poolTeam.lineup.map(clonePlayer));
   const bench = poolTeam.bench.map(clonePlayer);
   const rotation = poolTeam.rotation.map(clonePlayer);
   const bullpen = poolTeam.bullpen.map(clonePlayer);
@@ -8141,7 +8195,6 @@ function determineSavePitcher(gs, winnerKey, winningPitcher){
   const finalIdx = gs.pitcherIdx[winnerKey];
   const finalPitcherObj = TEAMS[winnerKey].pitchers[finalIdx];
   if(!finalPitcherObj || finalPitcherObj.name===winningPitcher || finalPitcherObj.role!=='RP') return null;
-  const margin = Math.abs(gs.score.away - gs.score.home);
   const line = gs.pitStats[winnerKey][finalPitcherObj.name] || {outs:0};
   const inningsThrown = (line.outs||0)/3;
   const entry = gs.pitcherEntry[winnerKey];
@@ -8155,15 +8208,23 @@ function determineSavePitcher(gs, winnerKey, winningPitcher){
     });
   if(blownDuringHisOwnStint) return null;
   // Rule 9.19(a): a reliever who finishes a win for his team qualifies for a save under ANY of:
-  //   (1) enters with a lead of 3 runs or fewer and pitches at least one inning,
+  //   (1) enters with a lead of 3 runs or fewer and pitches at least one inning — evaluated at the
+  //       moment of ENTRY, not by the final score margin. If his own team's offense later blows the
+  //       game open (e.g. entering up 4-1 and it finishes 8-1), that does NOT retroactively cost him
+  //       the save as long as he's the same pitcher who stays in through the final out — the save
+  //       situation existed when he came in and he was never the one who created or lost it.
   //   (2) enters with the potential tying run on base, at bat, or on deck — no innings-pitched
-  //       minimum at all here, which is exactly the short, high-leverage appearance (often well
-  //       under a full inning) that the innings-based checks below can never satisfy on their own.
+  //       minimum beyond the blanket 1/3-inning (1 out) floor that applies to every pathway below —
+  //       this is exactly the short, high-leverage appearance (often well under a full inning) that
+  //       the innings-based checks below can never satisfy on their own.
   //       Approximated as: the lead at entry was small enough that it's covered by the runners
   //       already on base (tying run on base) plus the batter (at bat) plus the next hitter (on
   //       deck) — i.e. lead <= runnersOnBase + 2.
   //   (3) pitches at least three innings, however he entered.
-  if(margin<=3 && inningsThrown>=1) return finalPitcherObj.name;
+  // All three require at least 1 out recorded (1/3 inning) — a pitcher credited with zero outs can
+  // never earn a save no matter how he entered.
+  if((line.outs||0) < 1) return null;
+  if(entry && entry.enteredLead>0 && entry.enteredLead<=3 && inningsThrown>=1) return finalPitcherObj.name;
   if(entry && entry.enteredLead>0 && entry.enteredLead<=entry.enteredRunnersOnBase+2) return finalPitcherObj.name;
   if(inningsThrown>=3) return finalPitcherObj.name;
   return null;
@@ -12389,7 +12450,11 @@ function renderGbUnforcedDefenseChoice(m){
     autoAdvanceOrWait(dz, fk, ()=>{ if(GS && GS.stage==='gb-unforced-defense-choice'){ resolveGbUnforcedConcede(); } }, 'Waiting for the defense to decide how to play it\u2026');
   }
 }
-// Offense holds: a completely routine groundout, runner stays exactly where they were.
+// Offense holds: a completely routine groundout for the batter-runner exchange on the bases-empty
+// side of the play — but per 3.12.C, a runner already on 3rd still scores automatically on this kind
+// of routine grounder as long as the infield isn't playing in, regardless of what the runner on 2nd
+// does. Declining to send the runner from 2nd is a decision about HIM specifically; it was never a
+// condition on the run that was already in motion from 3rd.
 function resolveGbUnforcedHold(){
   const res = GS.lastResolved;
   const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
@@ -12399,10 +12464,18 @@ function resolveGbUnforcedHold(){
   GS.outs += 1;
   GS.pitcherOuts[fk] += 1; creditPitch(GS, fk, pitcherName, 'outs');
   creditBat(GS, tk, batterName, 'AB');
-  const bannerText = wasOnThird
-    ? `${batterName} grounds out — ${GS.bases[1]} holds at 2nd, ${wasOnThird} holds at 3rd.`
-    : `${batterName} grounds out — ${GS.bases[1]} holds at 2nd.`;
-  finishPA(GS, 0, bannerText);
+  let runsIn = 0;
+  let bannerText;
+  if(wasOnThird){
+    runsIn = 1;
+    GS.bases[2] = null;
+    creditBat(GS, tk, wasOnThird, 'R'); creditBat(GS, tk, batterName, 'RBI');
+    creditRunsEarned(GS, fk, pitcherName, [wasOnThird]);
+    bannerText = `${batterName} grounds out — ${GS.bases[1]} holds at 2nd, ${wasOnThird} scores!`;
+  } else {
+    bannerText = `${batterName} grounds out — ${GS.bases[1]} holds at 2nd.`;
+  }
+  finishPA(GS, runsIn, bannerText);
   logEntry(GS, bannerText);
   GS.pendingClass = null;
   afterPlateAppearance();
@@ -13615,22 +13688,30 @@ function fmtAvg(v){ return v.toFixed(3).replace(/^-?0\./, v<0?'-.':'.'); }
 function pitchingERA(s){ const ip=(s.outs||0)/3; return ip>0 ? (s.ER*9/ip) : 0; }
 function fmtERA(v){ return v.toFixed(2); }
 function ordinal(n){ const s=['th','st','nd','rd'], v=n%100; return n+(s[(v-20)%10]||s[v]||s[0]); }
-// Shows the (W, x-y) / (L, x-y) / (S, n) notation next to a pitcher's name — only for whichever
-// pitcher(s) actually got today's decision, matching how real box scores only annotate the decision
-// pitchers, not every arm that appeared. Picks the playoff record specifically during a playoff game,
-// never blending it with the regular-season record.
-function pitcherRecordDisplay(name, seasonIdx, wls){
+// Shows the (W, x-y) / (L, x-y) / (S, n) / (H, n) / (BS, n) notation next to a pitcher's name — only
+// for whichever stat(s) actually apply to him today, matching how real box scores only annotate the
+// decision pitchers (plus anyone who picked up a hold or blown save), not every arm that appeared. A
+// pitcher can show more than one tag in the same game (a blown save and a loss commonly go together).
+// Picks the playoff record specifically during a playoff game, never blending it with the regular season.
+function pitcherRecordDisplay(name, seasonIdx, wls, outcomes, teamKey){
   if(!wls) return '';
   const bucket = (typeof PLAYOFF_MATCH_REF!=='undefined' && PLAYOFF_MATCH_REF) ? (typeof SEASON!=='undefined' && SEASON && SEASON.playoffPitchStats) : (typeof SEASON!=='undefined' && SEASON && SEASON.seasonPitchStats);
-  const career = (seasonIdx!=null && bucket && bucket[seasonIdx+':'+name]) || {W:0,L:0,SV:0};
+  const career = (seasonIdx!=null && bucket && bucket[seasonIdx+':'+name]) || {W:0,L:0,SV:0,BS:0,HLD:0};
   // Live, in-progress game: today's decision hasn't been merged into the season bucket yet, so it
   // still needs a +1 to show the correct resulting record. A historical box score's bucket already
   // includes this exact decision permanently, so no bump is needed there.
   const bump = BOX_SCORE_SNAPSHOT ? 0 : 1;
-  if(wls.winningPitcher===name) return ` (W, ${career.W+bump}-${career.L})`;
-  if(wls.losingPitcher===name) return ` (L, ${career.W}-${career.L+bump})`;
-  if(wls.savePitcher===name) return ` (S, ${career.SV+bump})`;
-  return '';
+  let tag = '';
+  if(wls.winningPitcher===name) tag += ` (W, ${career.W+bump}-${career.L})`;
+  if(wls.losingPitcher===name) tag += ` (L, ${career.W}-${career.L+bump})`;
+  if(wls.savePitcher===name) tag += ` (S, ${career.SV+bump})`;
+  if(outcomes && teamKey){
+    const heldCount = (outcomes.held[teamKey]||[]).filter(n=>n===name).length;
+    const blownCount = (outcomes.blown[teamKey]||[]).filter(n=>n===name).length;
+    if(heldCount) tag += ` (H, ${(career.HLD||0)+(BOX_SCORE_SNAPSHOT?0:heldCount)})`;
+    if(blownCount) tag += ` (BS, ${(career.BS||0)+(BOX_SCORE_SNAPSHOT?0:blownCount)})`;
+  }
+  return tag;
 }
 // Real ballpark names for the pre-built MLB teams, matched by team abbreviation — team NAMES and
 // city info are already used freely throughout this project (no logos/photos/branding involved), and
@@ -13706,6 +13787,7 @@ function pitchingTableHTML(teamKey){
   const seasonIdx = t.seasonIdx;
   const inSeasonCtx = seasonIdx!=null && typeof SEASON!=='undefined' && SEASON;
   const wls = GS.gameOver ? determineWinLossPitchers(GS) : null;
+  const outcomes = (GS.gameOver && wls) ? computeSaveSituationOutcomes(GS, wls.savePitcher, GS.winner, wls.winningPitcher, wls.losingPitcher) : null;
   const totals = {outs:0,H:0,R:0,ER:0,BB:0,SO:0,HR:0};
   const bfLines = [];
   const currentPitcherObj = t.pitchers[GS.pitcherIdx[teamKey]];
@@ -13734,7 +13816,7 @@ function pitchingTableHTML(teamKey){
     const eraSrc = inSeasonCtx ? combinedPitchLine(teamKey, name) : gameLine;
     const era = fmtERA(pitchingERA(eraSrc));
     const isActive = name===currentPitcherName && !GS.gameOver;
-    const record = pitcherRecordDisplay(name, seasonIdx, wls);
+    const record = pitcherRecordDisplay(name, seasonIdx, wls, outcomes, teamKey);
     return `<tr><td class="team">${name}${record}${isActive?' *':''}</td><td>${formatIP(gameLine.outs)}</td><td>${gameLine.H}</td><td>${gameLine.R}</td><td>${gameLine.ER}</td><td>${gameLine.BB}</td><td>${gameLine.SO}</td><td>${gameLine.HR}</td><td>${era}</td></tr>`;
   }).join('');
   const bfHTML = bfLines.length ? `<div class="boxsummary">Batters faced: ${bfLines.join(', ')}.</div>` : '';
@@ -13781,12 +13863,17 @@ function renderBoxScore(){
   pitWrap.innerHTML = pitchingTableHTML('away') + pitchingTableHTML('home');
   Array.from(pitWrap.children).forEach(child=>body.appendChild(child));
 
-  // WP/LP/SV: only known once the game's actually decided.
+  // WP/LP/SV/HLD/BS: only known once the game's actually decided.
   if(GS.gameOver){
     const wls = determineWinLossPitchers(GS);
     if(wls){
       const decisionLines = [`WP: ${wls.winningPitcher}.`, `LP: ${wls.losingPitcher}.`];
       if(wls.savePitcher) decisionLines.push(`SV: ${wls.savePitcher}.`);
+      const outcomes = computeSaveSituationOutcomes(GS, wls.savePitcher, GS.winner, wls.winningPitcher, wls.losingPitcher);
+      const allHeld = [...outcomes.held.home, ...outcomes.held.away];
+      const allBlown = [...outcomes.blown.home, ...outcomes.blown.away];
+      if(allHeld.length) decisionLines.push(`HLD: ${allHeld.join(', ')}.`);
+      if(allBlown.length) decisionLines.push(`BS: ${allBlown.join(', ')}.`);
       body.appendChild(el('div','boxsummary', decisionLines.join(' ')));
     }
   }
