@@ -4735,9 +4735,14 @@ function effectivePitcherIPLimit(p, pitchLine){
 // before confirming a pitching change. Draft Season uses the rulebook's own 4.4 rest rule as written.
 // MLB Season uses two house-rule adjustments instead: a 4-man rotation only ever provides 3 rest
 // games between a starter's turns (not the rulebook's 4, which was written for a 5-man rotation), and
-// with only 5 bullpen arms (a real MLB pen carries 7-8), relievers track consecutive appearances
-// directly rather than innings-based rest debt — two appearances in a row is fine, a third in a row is
-// what triggers "tired".
+// with only 5 bullpen arms (a real MLB pen carries 7-8), relievers are checked two different ways
+// depending on the innings rating printed on their OWN card (player.ip — a fixed card attribute, not
+// how many outs he actually recorded in any specific outing):
+//   - A 1-IP arm is tired only from back-to-back appearances (2 in a row) — going long in any single
+//     outing (1.1, 1.2, or more) is completely fine for him and carries no extra penalty on its own.
+//   - A 2-IP or 3-IP arm is tired from EITHER back-to-back appearances OR a single outing of more than
+//     3 outs (over an inning) — checked in that order, so when both are true at once it's simply
+//     attributed to the back-to-back rule rather than the long outing, since that check returns first.
 function isSeasonPitcherTired(teamKey, pitcherObj){
   const seasonIdx = TEAMS[teamKey] && TEAMS[teamKey].seasonIdx;
   if(seasonIdx==null || typeof SEASON==='undefined' || !SEASON) return false;
@@ -4745,7 +4750,10 @@ function isSeasonPitcherTired(teamKey, pitcherObj){
   if(SEASON.statsScope==='mlb' && pitcherObj.role!=='SP'){
     const streak = SEASON.pitcherStreak && SEASON.pitcherStreak[key];
     const gamesPlayedNow = teamGamesPlayedSoFar(seasonIdx);
-    return !!(streak && streak.lastAppearanceGameIdx===gamesPlayedNow-1 && streak.consecutiveCount>=2);
+    if(!streak || streak.lastAppearanceGameIdx!==gamesPlayedNow-1) return false;
+    if(streak.consecutiveCount>=2) return true;
+    if((pitcherObj.ip||1)>=2 && (streak.lastAppearanceOuts||0)>3) return true;
+    return false;
   }
   if(!SEASON.pitcherRest) return false;
   const tiredUntil = SEASON.pitcherRest[key] || 0;
@@ -7534,6 +7542,13 @@ function recordPitcherRestDebt(gs, awayIdx, homeIdx){
     const gamesPlayedBefore = teamGamesPlayedSoFar(teamIdx); // must be captured before today's game is marked played
     Object.keys(gs.pitStats[tk]).forEach(name=>{
       const line = gs.pitStats[tk][name];
+      // Every pitcher on the roster gets a zeroed stat line the moment the game starts (so the live
+      // box score can show all of them at 0 IP before anyone's actually pitched) — that's not the same
+      // thing as having appeared today. Skip anyone who never actually faced a batter or recorded an
+      // out, or literally everyone on the roster would rack up rest debt / consecutive-game credit
+      // just for being on the team, tiring out the entire bullpen after a couple of games regardless
+      // of who actually pitched.
+      if((line.outs||0)===0 && (line.BF||0)===0) return;
       const pitcherObj = TEAMS[tk].pitchers.find(p=>p.name===name);
       if(!pitcherObj) return;
       const key = teamIdx+':'+name;
@@ -7549,7 +7564,7 @@ function recordPitcherRestDebt(gs, awayIdx, homeIdx){
       } else if(isMLBSeason){
         const prev = SEASON.pitcherStreak[key];
         const wasConsecutive = !!(prev && prev.lastAppearanceGameIdx === gamesPlayedBefore-1);
-        SEASON.pitcherStreak[key] = { lastAppearanceGameIdx: gamesPlayedBefore, consecutiveCount: wasConsecutive ? prev.consecutiveCount+1 : 1 };
+        SEASON.pitcherStreak[key] = { lastAppearanceGameIdx: gamesPlayedBefore, consecutiveCount: wasConsecutive ? prev.consecutiveCount+1 : 1, lastAppearanceOuts: line.outs||0 };
       } else {
         const ip = (line.outs||0)/3;
         const restNeeded = Math.min(4, Math.max(1, Math.ceil(ip)));
