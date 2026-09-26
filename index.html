@@ -2755,13 +2755,24 @@ function applyRosterSwap(team, incoming, outgoingName){
   const rotIdx = team.rotation.findIndex(p=>p.name===outgoingName);
   const bullIdx = team.bullpen.findIndex(p=>p.name===outgoingName);
 
+  // Whoever is CURRENTLY at pitchers[0] is today's actual starter — on a live, already-cloned game
+  // team this reflects the real locked-in rotation turn (e.g. the 3rd turn through a 4-man rotation),
+  // not necessarily rotation[0]. Capture that BEFORE the swap below can touch the rotation array.
+  const priorStarterName = team.pitchers && team.pitchers[0] ? team.pitchers[0].name : null;
+
   if(lineupIdx>=0){ team.lineup[lineupIdx] = Object.assign({}, incomingClean, {pos:team.lineup[lineupIdx].pos}); }
   else if(benchIdx>=0){ team.bench[benchIdx] = incomingClean; }
   else if(rotIdx>=0){ team.rotation[rotIdx] = incomingClean; }
   else if(bullIdx>=0){ team.bullpen[bullIdx] = incomingClean; }
   else return null;
 
-  team.pitchers = [team.rotation[0], ...team.bullpen].filter(Boolean);
+  // Rebuild pitchers[0] to the SAME starter as before the swap — unless that starter is the very
+  // player who just got swapped out, in which case whoever just took his rotation slot inherits his
+  // turn instead. Only falls back to rotation[0] if neither of those can be found (shouldn't happen
+  // in normal use, but keeps this safe rather than throwing).
+  const newStarter = (priorStarterName===outgoingName) ? team.rotation[rotIdx]
+    : team.rotation.find(p=>p.name===priorStarterName) || team.rotation[0];
+  team.pitchers = [newStarter, ...team.bullpen].filter(Boolean);
   return outgoing;
 }
 // MLB Season only: swaps a "minor leaguer" (team.extra — the leftover players who didn't make a real
