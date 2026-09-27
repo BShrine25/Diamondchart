@@ -5585,7 +5585,7 @@ function appendBenchOrPitcherRestInfo(box, player, team){
     const lastGameIdx = SEASON.lastPitchedGameIdx && SEASON.lastPitchedGameIdx[key];
     if(lastGameIdx!=null){
       const gamesAgo = teamGamesPlayedSoFar(seasonIdx) - lastGameIdx;
-      box.appendChild(el('div','rulesnote', `Last Pitched: ${gamesAgo}`));
+      box.appendChild(el('div','rulesnote', `Last Pitched: ${gamesAgo} game${gamesAgo===1?'':'s'} ago`));
     }
   } else if(!isPitcherRole){
     const isBenchPlayer = SEASON.teams && SEASON.teams[seasonIdx] && SEASON.teams[seasonIdx].bench.some(p=>p.name===player.name);
