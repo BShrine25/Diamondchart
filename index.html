@@ -11686,7 +11686,14 @@ function resolveHitRunFBContest(contested, autoSafeOthers){
       }
     });
     GS.bases = bases;
-    finishPA(GS, runsIn, '');
+    // This batter's own plate appearance was ALREADY finished back in resolveHitAndRunFB, via the
+    // applyOutcome() call at its top (which ends by calling finishPA itself) — that's what correctly
+    // advanced the lineup to whoever bats next. This contested-throw step is a separate, later decision
+    // about what happens to the RUNNER, not a second plate appearance, so it must NOT also call
+    // finishPA — doing so was advancing the lineup a second time and skipping the next actual batter
+    // entirely. Any runs the runner scores here still need crediting, just without re-triggering
+    // everything else finishPA does for a plate appearance (lineup advance, batters-faced, etc).
+    addRuns(GS, tk, runsIn);
     logEntry(GS, bannerText+otherText);
     GS.contestResult = { label:'Hit and Run \u2014 Fly Ball', defLabel:'Outfield Defense', defValue, roll:dieRoll, defTotal, offLabel:'Runner Speed', offValue, bannerClass, bannerText: bannerText+otherText, extraNote:'' };
     GS.stage = 'hitrun-fb-result';
