@@ -3952,7 +3952,7 @@ const BAL_BATTERS = [
 ];
 const BAL_PITCHERS = [
   cardPitcher("Chris Bassitt",'SP',240,{LD:2,SO:3,GB:6,FB:3,BB:2,'1B':3,'2B':5,HR:1},5,5),
-  cardPitcher("Kyle Bradish",'SP',260,{LD:3,SO:6,GB:8,FB:1,BB:1,'2B':7,HR:1},6,3),
+  cardPitcher("Kyle Bradish",'SP',260,{LD:3,SO:6,GB:8,FB:1,BB:1,'2B':7,HR:1},6,1),
   cardPitcher("Shane Baz",'SP',370,{LD:2,SO:5,GB:5,FB:4,BB:1,'1B':2,'2B':7,HR:1},6,4),
   cardPitcher("Yennier Cano",'RP',270,{LD:1,SO:5,GB:8,FB:3,BB:1,'1B':2,'2B':6,HR:1},1,5),
   cardPitcher("Keegan Akin",'RP',120,{LD:3,SO:3,GB:5,FB:6,'1B':3,'2B':6,HR:1},1,2),
@@ -8104,7 +8104,7 @@ function exportSeasonJSON(){
     season: SEASON,
     careerSnapshot: getCareerStats(scope),
   };
-  const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
+  const blob = new Blob([JSON.stringify(payload)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -13694,9 +13694,24 @@ function snapshotGSForBox(gs){
   // silently swallowed by the try/catch in saveActiveSeason — no error, just data that quietly never
   // persisted. Dropping it here is a pure size optimization: nothing about what the box score actually
   // displays depends on it.
+  // Same reasoning extends to everything below log: all of it is mid-play/mid-decision UI state that
+  // only ever matters WHILE a game is still in progress (what's currently pending, whose turn it is to
+  // decide something, an in-flight animation, a challenge count that's already been spent) — by the
+  // time a game is over and gets snapshotted, none of it is ever read again by any box-score display
+  // or by determineWinLossPitchers/computeSaveSituationOutcomes (checked against every field those two
+  // actually use before adding this list). Measured on a real played game, this and the log strip
+  // together cut a single game's stored size by roughly a fifth, on top of a much bigger win from the
+  // export function no longer pretty-printing the whole file.
   return JSON.parse(JSON.stringify(Object.assign({}, gs, {
     pitcherRemoved: { away: Array.from(gs.pitcherRemoved.away), home: Array.from(gs.pitcherRemoved.home) },
-    log: [],
+    log: [], lastResolved: null, absChallengeAtBatBatter: null, runnerCredit: {},
+    absChallengeUsed: {away:false, home:false}, absChallenges: {away:0, home:0}, stage: null,
+    infieldIn: false, hitAndRun: false, wasSimulated: false, handoff: null,
+    offenseReady: false, offenseTimerArmed: false, defenseTimerArmed: false,
+    absPending: null, absChallengeResult: null, subSlotIdx: null, subBaseIdx: null,
+    pending: null, pendingClass: null, contestResult: null, extraBase: null, rollAnim: null,
+    ghostRunner: null, pendingSteal: null, tagUp: null, pendingExtraBaseThrow: null,
+    outs: 0, onBaseBonus: 0, pitchBonus: 0, buntAttempt: 0, seq: 0, absExtraInningsGranted: 9,
   })));
 }
 // Builds the full persisted snapshot for one just-finished game — called right before GS/TEAMS get
