@@ -2531,7 +2531,10 @@ function minFutureCostAfterPick(roster, pool, player){
 function canAssign(roster, player, ignoreCap){
   let basicOk;
   if(player.ptype==='pitcher' || player.ptype==='twoWay'){
-    basicOk = player.role==='SP' ? roster.rotation.length<DRAFT.rotationCap : roster.bullpen.length<DRAFT.bullpenCap;
+    // House rule: once the rotation is full, a starter isn't blocked from being drafted at all — he
+    // can still go to the bullpen like any reliever, same as the 6th-starter-and-later overflow rule
+    // for a single-game draft. Only actually unavailable once BOTH the rotation and bullpen are full.
+    basicOk = player.role==='SP' ? (roster.rotation.length<DRAFT.rotationCap || roster.bullpen.length<DRAFT.bullpenCap) : roster.bullpen.length<DRAFT.bullpenCap;
   } else {
     basicOk = false;
     for(const pos of STARTING_POSITIONS){ if(!roster.lineupSlots[pos] && player.elig && player.elig.includes(pos)){ basicOk=true; break; } }
@@ -2557,7 +2560,10 @@ function assignToRoster(roster, player){
   roster.totalPoints += player.points;
   roster.picksMade = (roster.picksMade||0) + 1;
   if(player.ptype==='pitcher'){
-    if(player.role==='SP'){ roster.rotation.push(player); } else { roster.bullpen.push(player); }
+    // A 6th-or-later starter (rotation already full) goes straight to the bullpen instead of being
+    // blocked from the draft entirely — canAssign above already confirmed there's room somewhere.
+    if(player.role==='SP' && roster.rotation.length<DRAFT.rotationCap){ roster.rotation.push(player); }
+    else { roster.bullpen.push(player); }
     return;
   }
   if(player.ptype==='twoWay'){
@@ -2578,7 +2584,7 @@ function assignToRoster(roster, player){
       speed: player.speed, onBase: player.onBase, fielding: player.fielding||{},
       chart: player.chart, obFromCard: player.obFromCard, hand: player.hand, twoWay: true,
     };
-    if(pitchCard.role==='SP'){ roster.rotation.push(pitchCard); } else { roster.bullpen.push(pitchCard); }
+    if(pitchCard.role==='SP' && roster.rotation.length<DRAFT.rotationCap){ roster.rotation.push(pitchCard); } else { roster.bullpen.push(pitchCard); }
     let assigned = false;
     for(const pos of STARTING_POSITIONS){ if(!assigned && !roster.lineupSlots[pos] && batCard.elig && batCard.elig.includes(pos)){ roster.lineupSlots[pos]=batCard; assigned=true; } }
     if(!assigned && !roster.lineupSlots.DH){ roster.lineupSlots.DH=batCard; assigned=true; }
@@ -3069,7 +3075,10 @@ function cardPitcher(name, role, points, chartCounts, ip, command, handOverride)
   const chart = chartFromCounts(chartCounts, PITCHER_CHART_ORDER);
   const cmd = (command!==undefined) ? command : BASELINE_PITCHER_COMMAND;
   const xZone = 1;
-  const obj = { name, points, command:cmd, xZone, ip, chart, role, cmdFromCard: command!==undefined };
+  // House rule: every pitcher uses a flat Speed of 8 on the rare occasion he's actually on base (an
+  // emergency at-bat with the bench exhausted) — double plays, contested throws, steal-distance
+  // checks, anything speed-based all read this exactly like a real batter's own speed rating.
+  const obj = { name, points, command:cmd, xZone, ip, chart, role, speed:8, cmdFromCard: command!==undefined };
   if(handOverride){ obj.hand = handOverride; obj._handLocked = true; }
   return attachRealCardImage(obj);
 }
@@ -4591,6 +4600,11 @@ function newGameState(mode){
     mode,
     inning:1, half:'top', outs:0,
     bases:[null,null,null],
+    // MLB rule: once a team's DH takes a defensive position, that team forfeits the DH for the rest of
+    // the game — the pitcher takes over the batting-order spot of whichever fielder got displaced, not
+    // a fresh bench player stepping in as a new DH. Tracked per side since each team's DH status is
+    // independent of the other's.
+    dhLost: {away:false, home:false},
     // Inherited-runner fix: maps a baserunner's name to the name of whoever was pitching when THEY
     // reached base. Runs (R/ER) are credited off this map, not off whoever's currently on the mound,
     // so a reliever who inherits runners isn't charged for (or "tired" by) runs the previous pitcher
@@ -4754,17 +4768,70 @@ function effectivePitcherIPLimit(p, pitchLine){
 //   - A 2-IP or 3-IP arm is tired from EITHER back-to-back appearances OR a single outing of more than
 //     3 outs (over an inning) — checked in that order, so when both are true at once it's simply
 //     attributed to the back-to-back rule rather than the long outing, since that check returns first.
+// House rule: a starter stashed in the bullpen is functionally a reliever for every gameplay purpose
+// — stamina tracking, hold/save eligibility — regardless of what his card's own role tag says. Likewise
+// a pitcher currently slotted in the rotation is treated as a starter even in the (currently
+// impossible, but kept safe) case his role tag says otherwise. Checks actual CURRENT placement, not
+// the static card role, since that's the whole point of being able to move a pitcher between the two.
+function isCurrentlyBullpenArm(teamKey, pitcherObj){
+  if(!pitcherObj) return false;
+  const team = TEAMS[teamKey];
+  if(team && team.bullpen && team.bullpen.some(p=>p.name===pitcherObj.name)) return true;
+  if(team && team.rotation && team.rotation.some(p=>p.name===pitcherObj.name)) return false;
+  return pitcherObj.role==='RP'; // fallback when neither array is available to check against
+}
+// Moves a pitcher between a team's persistent rotation and bullpen arrays mid-season, converting his
+// tiredness tracking across the switch rather than giving him a blank slate — "4 days if he just
+// pitched, 3 if it was 2 games ago" falls straight out of reusing the exact same math each system
+// already applies to a fresh appearance, just anchored to his actual last outing instead of today's.
+function movePitcherToBullpen(team, teamIdx, pitcherName){
+  const idx = team.rotation.findIndex(p=>p.name===pitcherName);
+  if(idx===-1) return false;
+  const [pitcher] = team.rotation.splice(idx,1);
+  team.bullpen.push(pitcher);
+  if(typeof SEASON!=='undefined' && SEASON && SEASON.pitcherRest){
+    const key = teamIdx+':'+pitcherName;
+    const tiredUntil = SEASON.pitcherRest[key];
+    if(tiredUntil!=null){
+      const restNeeded = SEASON.statsScope==='mlb' ? 3 : 4;
+      const lastStartGameIdx = tiredUntil - 1 - restNeeded; // inverts the same formula pitcherRest was built from
+      if(!SEASON.pitcherStreak) SEASON.pitcherStreak = {};
+      // outs left high so the 2+/3+ IP long-outing rule still reads a real start as the deep outing it was
+      SEASON.pitcherStreak[key] = { lastAppearanceGameIdx: lastStartGameIdx, consecutiveCount: 1, lastAppearanceOuts: 18 };
+    }
+  }
+  return true;
+}
+function movePitcherToRotation(team, teamIdx, pitcherName){
+  const idx = team.bullpen.findIndex(p=>p.name===pitcherName);
+  if(idx===-1) return false;
+  const [pitcher] = team.bullpen.splice(idx,1);
+  team.rotation.push(pitcher);
+  if(typeof SEASON!=='undefined' && SEASON){
+    const key = teamIdx+':'+pitcherName;
+    const streak = SEASON.pitcherStreak && SEASON.pitcherStreak[key];
+    if(streak){
+      const restNeeded = SEASON.statsScope==='mlb' ? 3 : 4;
+      const newTiredUntil = streak.lastAppearanceGameIdx + 1 + restNeeded;
+      if(!SEASON.pitcherRest) SEASON.pitcherRest = {};
+      SEASON.pitcherRest[key] = Math.max(SEASON.pitcherRest[key]||0, newTiredUntil);
+    }
+  }
+  return true;
+}
 function isSeasonPitcherTired(teamKey, pitcherObj){
   const seasonIdx = TEAMS[teamKey] && TEAMS[teamKey].seasonIdx;
   if(seasonIdx==null || typeof SEASON==='undefined' || !SEASON) return false;
   const key = seasonIdx+':'+pitcherObj.name;
-  if(SEASON.statsScope==='mlb' && pitcherObj.role!=='SP'){
-    const streak = SEASON.pitcherStreak && SEASON.pitcherStreak[key];
-    const gamesPlayedNow = teamGamesPlayedSoFar(seasonIdx);
-    if(!streak || streak.lastAppearanceGameIdx!==gamesPlayedNow-1) return false;
-    if(streak.consecutiveCount>=2) return true;
-    if((pitcherObj.ip||1)>=2 && (streak.lastAppearanceOuts||0)>3) return true;
-    return false;
+  if(SEASON.statsScope==='mlb' && isCurrentlyBullpenArm(teamKey, pitcherObj)){
+    const log = SEASON.pitcherDayLog && SEASON.pitcherDayLog[key];
+    if(!log) return false;
+    const today = currentLeagueDay();
+    const daysSince = today - log.day;
+    const wasConsecutiveDay = log.prevDay===log.day-1;
+    const combinedOuts = log.outs + (wasConsecutiveDay ? log.prevOuts : 0);
+    const tiredDaysNeeded = computeTiredDaysNeeded(pitcherObj.ip||1, log.outs, wasConsecutiveDay, combinedOuts);
+    return daysSince <= tiredDaysNeeded;
   }
   if(!SEASON.pitcherRest) return false;
   const tiredUntil = SEASON.pitcherRest[key] || 0;
@@ -4808,7 +4875,11 @@ function runnerSpeed(teamKey, name){
 function fielderBonus(teamKey, pos){
   const p = TEAMS[teamKey].lineup.find(x=>x.pos===pos);
   if(!p) return 0;
-  if(!p.elig || !p.elig.includes(pos)) return OUT_OF_POSITION_PENALTY; // not rated at this spot — emergency fielder
+  // House rule: an emergency fielder is normally -5, but specifically at 1B it's only -2 — fielding
+  // 1B without being rated there is a much smaller ask than any other emergency assignment. Catcher
+  // never reaches this branch at all: eligibleFor() hard-blocks anyone not actually rated there from
+  // ever being placed at catcher in the first place, emergency or not.
+  if(!p.elig || !p.elig.includes(pos)) return pos==='1B' ? EMERGENCY_FIRST_BASE_PENALTY : OUT_OF_POSITION_PENALTY;
   if(p.fielding && p.fielding[pos]!==undefined) return p.fielding[pos];
   return 0;
 }
@@ -5097,8 +5168,12 @@ function applyOutcome(gs, res){
 // field position at all (DH-only, e.g. a pure slugger type) CAN still be pressed into an emergency
 // field assignment — they're not blocked — but it comes with a fielding penalty (see fielderBonus).
 const OUT_OF_POSITION_PENALTY = -5;
+const EMERGENCY_FIRST_BASE_PENALTY = -2; // house rule: 1B specifically is a smaller ask than any other emergency spot
 function eligibleFor(player, targetPos){
   if(targetPos==='DH') return true;
+  // House rule: catcher is never an emergency position — a player not actually rated there can never
+  // be placed at catcher, full stop, no penalty-based fallback the way every other position allows.
+  if(targetPos==='C') return !!(player.elig && player.elig.includes('C'));
   if(player.elig && player.elig.length) return player.elig.includes(targetPos);
   return true; // DH-only player: allowed in an emergency, at a penalty
 }
@@ -5214,6 +5289,55 @@ function performBatterSub(gs, teamKey, slotIdx, benchIdx, reasonLabel){
     gs.lineupExitInning[teamKey][oldPlayer.name] = gs.inning;
   }
   logEntry(gs, `<b>${replacement.name}</b> ${reasonLabel} for <b>${oldPlayer.name}</b> (${oldPlayer.pos}).`);
+  return replacement;
+}
+// Catcher-specific defensive change: since catcher is never an emergency fill, freeing up the current
+// catcher sometimes means an already-fielding, C-eligible player (stationed anywhere else, including
+// DH) shifts over to catch, while a bench player covers whatever position HE vacates — two lineup
+// slots change at once instead of the usual one. The shifting player keeps his own spot in the
+// batting order throughout; only his position tag changes.
+function performCatcherShift(gs, teamKey, outgoingSlotIdx, shiftingSlotIdx, benchIdx){
+  const team = TEAMS[teamKey];
+  const shiftingPlayer = team.lineup[shiftingSlotIdx];
+  const outgoingCatcher = team.lineup[outgoingSlotIdx];
+  const originalShiftPos = shiftingPlayer.pos;
+  const newPlayer = team.bench[benchIdx];
+  team.lineup[shiftingSlotIdx] = Object.assign({}, shiftingPlayer, {pos:'C'});
+  const replacement = Object.assign({}, newPlayer, {pos: originalShiftPos});
+  team.lineup[outgoingSlotIdx] = replacement;
+  team.bench.splice(benchIdx,1);
+  if(!gs.batStats[teamKey][replacement.name]) gs.batStats[teamKey][replacement.name] = initBatLine();
+  gs.subLetter = (gs.subLetter||0) + 1;
+  if(!gs.lineupHistory[teamKey][outgoingSlotIdx]) gs.lineupHistory[teamKey][outgoingSlotIdx] = [];
+  gs.lineupHistory[teamKey][outgoingSlotIdx].push({name:replacement.name, pos:replacement.pos, tag:'DEF', letter:subLetterChar(gs.subLetter), inning:gs.inning, forName:outgoingCatcher.name});
+  if(gs.startingLineupNames && gs.startingLineupNames[teamKey].includes(outgoingCatcher.name) && gs.lineupExitInning[teamKey][outgoingCatcher.name]===undefined){
+    gs.lineupExitInning[teamKey][outgoingCatcher.name] = gs.inning;
+  }
+  logEntry(gs, `<b>${shiftingPlayer.name}</b> moves to catcher; <b>${replacement.name}</b> takes over at ${originalShiftPos}, replacing <b>${outgoingCatcher.name}</b> (C).`);
+  return replacement;
+}
+// MLB rule: when the shifting player is coming FROM the DH slot specifically, there's no bench
+// replacement to pick — the team forfeits the DH entirely for the rest of the game, and the pitcher
+// himself takes over the vacated batting-order spot (the DISPLACED catcher's old slot, not the DH's
+// own slot, which the shifting player keeps). No further at-bat for a DH exists after this point
+// unless some later substitution reintroduces a pinch-hitter into that same spot the normal way.
+function performCatcherShiftLoseDH(gs, teamKey, outgoingSlotIdx, shiftingSlotIdx){
+  const team = TEAMS[teamKey];
+  const shiftingPlayer = team.lineup[shiftingSlotIdx];
+  const outgoingCatcher = team.lineup[outgoingSlotIdx];
+  const pitcher = currentPitcher(gs);
+  team.lineup[shiftingSlotIdx] = Object.assign({}, shiftingPlayer, {pos:'C'});
+  const replacement = Object.assign({}, pitcher, {pos:'P'});
+  team.lineup[outgoingSlotIdx] = replacement;
+  gs.dhLost[teamKey] = true;
+  if(!gs.batStats[teamKey][replacement.name]) gs.batStats[teamKey][replacement.name] = initBatLine();
+  gs.subLetter = (gs.subLetter||0) + 1;
+  if(!gs.lineupHistory[teamKey][outgoingSlotIdx]) gs.lineupHistory[teamKey][outgoingSlotIdx] = [];
+  gs.lineupHistory[teamKey][outgoingSlotIdx].push({name:replacement.name, pos:replacement.pos, tag:'DEF', letter:subLetterChar(gs.subLetter), inning:gs.inning, forName:outgoingCatcher.name});
+  if(gs.startingLineupNames && gs.startingLineupNames[teamKey].includes(outgoingCatcher.name) && gs.lineupExitInning[teamKey][outgoingCatcher.name]===undefined){
+    gs.lineupExitInning[teamKey][outgoingCatcher.name] = gs.inning;
+  }
+  logEntry(gs, `<b>${shiftingPlayer.name}</b> moves to catcher; <b>${pitcher.name}</b> now bats in <b>${outgoingCatcher.name}</b>'s spot \u2014 ${TEAMS[teamKey].nick||'the team'} lose the DH for the rest of the game.`);
   return replacement;
 }
 
@@ -5390,6 +5514,8 @@ let PLAYER_CARD_VIEW = null;
 // {teamIdx, player} — set when "Call Up" is tapped on a minor leaguer in the season roster view;
 // shows a picker of who on the active roster to send down in exchange.
 let SEASON_CALLUP_PICK = null;
+let REST_DAY_PICK = null;
+let STARTER_CHOICE_PICK = null;
 let PLAYOFF_SCHEDULE_VIEW=false;
 // Set while viewing a PAST game's box score from the schedule (as opposed to the live in-progress
 // game) — see renderBoxScore, which temporarily swaps the GS/TEAMS globals for the snapshot's own
@@ -5513,6 +5639,8 @@ function renderReal(){
   if(SCREEN==='drafting' && DRAFT_ROSTER_VIEW){ renderDraftRosterView(); }
   if(SCREEN==='seasonhub' && SEASON_ROSTER_VIEW){ renderSeasonRosterView(); }
   if(SCREEN==='seasonhub' && SEASON_ROSTER_VIEW && SEASON_CALLUP_PICK){ renderSeasonCallUpPicker(); }
+  if(SCREEN==='seasonhub' && REST_DAY_PICK){ renderRestDayPick(); }
+  if(SCREEN==='seasonhub' && STARTER_CHOICE_PICK){ renderStarterChoicePick(); }
   if(SCREEN==='seasonhub' && SEASON_SCHEDULE_VIEW){ renderSeasonScheduleView(); }
   if(SCREEN==='seasonhub' && SEASON_STATS_VIEW){ renderSeasonStatsView(); }
   if(SCREEN==='seasonhub' && SEASON_LEADERS_VIEW){ renderSeasonLeadersView(); }
@@ -5581,7 +5709,10 @@ function appendBenchOrPitcherRestInfo(box, player, team){
   const seasonIdx = team && team.seasonIdx;
   if(!(typeof SEASON!=='undefined' && SEASON && seasonIdx!=null)) return;
   const key = seasonIdx+':'+player.name;
-  if(isPitcherRole && player.role==='RP'){
+  // A starter currently stashed in the bullpen reads "Last Pitched" the same way a true reliever
+  // does — checked against where he's ACTUALLY assigned right now, not his card's static role tag.
+  const isBullpenArmNow = team && team.bullpen && team.bullpen.some(p=>p.name===player.name);
+  if(isPitcherRole && isBullpenArmNow){
     const lastGameIdx = SEASON.lastPitchedGameIdx && SEASON.lastPitchedGameIdx[key];
     if(lastGameIdx!=null){
       const gamesAgo = teamGamesPlayedSoFar(seasonIdx) - lastGameIdx;
@@ -6966,6 +7097,13 @@ function renderSeasonRosterView(){
     const row = el('div','prow');
     row.innerHTML = `<div class="pos">SP</div><div class="nm">${p.name}${p.twoWay?' <span class="twoway-tag">Two-Way</span>':''}</div><div class="sub2">${p.points} pt</div>`;
     addCardViewClick(row, p);
+    // House rule: in an MLB Season, any starter can be moved to the bullpen at any time — his
+    // tiredness carries over rather than resetting (movePitcherToBullpen handles the conversion).
+    if(isMlbSeason && !p.twoWay){
+      const moveBtn = el('button','btn small secondary','Move to Bullpen'); moveBtn.style.marginLeft='auto';
+      moveBtn.onclick = (e)=>{ e.stopPropagation(); movePitcherToBullpen(team, i, p.name); render(); };
+      row.appendChild(moveBtn);
+    }
     addDropBtn(row, p);
     list.appendChild(row);
   });
@@ -6973,6 +7111,13 @@ function renderSeasonRosterView(){
     const row = el('div','prow');
     row.innerHTML = `<div class="pos">RP</div><div class="nm">${p.name}${p.twoWay?' <span class="twoway-tag">Two-Way</span>':''}</div><div class="sub2">${p.points} pt</div>`;
     addCardViewClick(row, p);
+    // Only a starter-rated arm makes sense to send back to the rotation — a true reliever has no
+    // rotation turn to take over.
+    if(isMlbSeason && p.role==='SP' && !p.twoWay){
+      const moveBtn = el('button','btn small secondary','Move to Rotation'); moveBtn.style.marginLeft='auto';
+      moveBtn.onclick = (e)=>{ e.stopPropagation(); movePitcherToRotation(team, i, p.name); render(); };
+      row.appendChild(moveBtn);
+    }
     addDropBtn(row, p);
     list.appendChild(row);
   });
@@ -7009,6 +7154,111 @@ function renderSeasonRosterView(){
 // Shown after tapping "Call Up" on a minor leaguer — pick who on the active roster goes down to the
 // minors in exchange. Only like-for-like swaps are offered (a pitcher minor leaguer can only bump a
 // pitcher, a batter only a batter) since applyRosterSwap enforces the same rule underneath.
+// The rest-day acknowledgment flow: lets the team optionally burn a rotation turn outright on an off
+// day (treating it as though that pitcher started and failed, for tiredness purposes, and advancing
+// the rotation past him) instead of just letting the rotation sit paused the way an ordinary bye does.
+function renderRestDayPick(){
+  const { entry } = REST_DAY_PICK;
+  const teamIdx = entry.teamIdx;
+  const team = SEASON.teams[teamIdx];
+  const teamName = SEASON.names ? SEASON.names[teamIdx] : team.nick;
+  const overlay = el('div','confirm-overlay');
+  const box = el('div','confirm-box');
+  box.appendChild(el('div','display', `${teamName} \u2014 Rest Day`));
+  const note = el('div','rulesnote', 'This day doesn\u2019t have a game for this team. You can let the rotation just sit paused until their next real start, or burn today\u2019s turn on a specific starter outright \u2014 he\u2019s treated as though he pitched today for rest purposes, and the rotation moves on to whoever\u2019s next without him.');
+  note.style.marginTop='10px';
+  box.appendChild(note);
+
+  const list = el('div','plist'); list.style.marginTop='12px';
+  team.rotation.forEach(p=>{
+    const row = el('div','prow clickable');
+    row.innerHTML = `<div class="pos">SP</div><div class="nm">${p.name}</div><div class="sub2">${p.points} pt</div>`;
+    row.onclick = ()=>{
+      const restNeeded = 3; // MLB Season's 4-man-rotation rest requirement
+      const newTiredUntil = teamGamesPlayedSoFar(teamIdx) + restNeeded;
+      if(!SEASON.pitcherRest) SEASON.pitcherRest = {};
+      const key = teamIdx+':'+p.name;
+      SEASON.pitcherRest[key] = Math.max(SEASON.pitcherRest[key]||0, newTiredUntil);
+      SEASON.rotationSkips = SEASON.rotationSkips || {};
+      SEASON.rotationSkips[teamIdx] = (SEASON.rotationSkips[teamIdx]||0) + 1;
+      entry.played = true;
+      REST_DAY_PICK = null;
+      render();
+    };
+    list.appendChild(row);
+  });
+  box.appendChild(list);
+
+  const restBtn = el('button','btn small secondary','Just Rest \u2014 Don\u2019t Skip Anyone'); restBtn.style.marginTop='12px';
+  restBtn.onclick = ()=>{ entry.played = true; REST_DAY_PICK = null; render(); };
+  box.appendChild(restBtn);
+
+  overlay.appendChild(box);
+  root.appendChild(overlay);
+}
+// A tired starter doesn't actually have to sit — the rotation rolling forward to whoever's next is
+// just the sensible default almost everyone will take. This screen exists so the choice is visible and
+// explicit (same tired-marker convention as the reliever picker) rather than silently automatic, for
+// the rare case someone genuinely wants to bring an available-but-not-"next" starter back early.
+function renderStarterChoicePick(){
+  const { g, awayIdx, homeIdx, awayDefault, homeDefault, awaySelected, homeSelected, awayHuman, homeHuman } = STARTER_CHOICE_PICK;
+  const overlay = el('div','confirm-overlay');
+  const box = el('div','confirm-box');
+  box.appendChild(el('div','display', 'Confirm Starting Pitchers'));
+  const note = el('div','rulesnote', 'The rotation rolls forward by default \u2014 tap a different starter only if you specifically want to bring someone else back early.');
+  note.style.marginTop='10px';
+  box.appendChild(note);
+
+  // isSeasonPitcherTired reads TEAMS[teamKey]/seasonIdx off the live game clone, which doesn't exist
+  // yet at this point in the flow (the team hasn't been cloned for today's game) — so check tiredness
+  // directly against the persistent SEASON data instead, same underlying logic either way.
+  const tiredFor = (teamIdx, pitcherObj)=>{
+    const key = teamIdx+':'+pitcherObj.name;
+    if(!SEASON.pitcherRest) return false;
+    const tiredUntil = SEASON.pitcherRest[key] || 0;
+    return teamGamesPlayedSoFar(teamIdx) < tiredUntil;
+  };
+
+  [[awayIdx, awaySelected, awayHuman, (i)=>{STARTER_CHOICE_PICK.awaySelected=i;}],
+   [homeIdx, homeSelected, homeHuman, (i)=>{STARTER_CHOICE_PICK.homeSelected=i;}]].forEach(([teamIdx, selected, isHuman, onPick])=>{
+    const team = SEASON.teams[teamIdx];
+    const label = el('div','team-label', `${SEASON.names ? SEASON.names[teamIdx] : team.nick}`); label.style.marginTop='14px';
+    box.appendChild(label);
+    if(!isHuman){
+      box.appendChild(el('div','rulesnote', `${team.rotation[selected].name} starts (CPU-controlled).`));
+      return;
+    }
+    const list = el('div','plist');
+    team.rotation.forEach((p,i)=>{
+      const tired = tiredFor(teamIdx, p);
+      const row = el('div','prow clickable'+(i===selected?' standrow':''));
+      row.innerHTML = `<div class="nm">${p.name}${i===selected?' (selected)':''}${tired?' \u26a0\ufe0f Tired':''}</div><div class="sub2">${p.points} pt</div>`;
+      row.onclick = ()=>{ onPick(i); render(); };
+      list.appendChild(row);
+    });
+    box.appendChild(list);
+  });
+
+  const confirmBtn = el('button','btn','Confirm Starters'); confirmBtn.style.marginTop='14px';
+  confirmBtn.onclick = ()=>{
+    const pick = STARTER_CHOICE_PICK;
+    SEASON_GAME_IDX = g.idx;
+    SEASON_AWAY_HUMAN = awayHuman;
+    SEASON_HOME_HUMAN = homeHuman;
+    TEAMS.away = cloneTeamForGame(SEASON.teams[awayIdx], pick.awaySelected, awayIdx);
+    TEAMS.home = cloneTeamForGame(SEASON.teams[homeIdx], pick.homeSelected, homeIdx);
+    enforceMandatoryBenchStarts(TEAMS.away, awayIdx);
+    enforceMandatoryBenchStarts(TEAMS.home, homeIdx);
+    enforceCatcherRestDay(TEAMS.away, awayIdx);
+    enforceCatcherRestDay(TEAMS.home, homeIdx);
+    STARTER_CHOICE_PICK = null;
+    STARTER_PICK = 0; SCREEN='roster'; ROSTER_STEP='away'; render();
+  };
+  box.appendChild(confirmBtn);
+
+  overlay.appendChild(box);
+  root.appendChild(overlay);
+}
 function renderSeasonCallUpPicker(){
   const { teamIdx, player } = SEASON_CALLUP_PICK;
   const team = SEASON.teams[teamIdx];
@@ -7530,6 +7780,51 @@ function teamGamesPlayedSoFar(teamIdx){
   }
   return n;
 }
+// The current "day" of the season — not a per-team game count, but how far the WHOLE LEAGUE has
+// progressed through the schedule's round numbers. A team with a scheduled off-day still experiences
+// that day passing (and the rest it provides), even though no game of THEIRS happened on it — this is
+// the whole point of day-based stamina instead of game-based: a bye genuinely rests a tired arm.
+function currentLeagueDay(){
+  if(!SEASON || !SEASON.schedule) return 0;
+  let maxRound = 0;
+  SEASON.schedule.forEach(g=>{ if(g.played && g.round!=null && g.round>maxRound) maxRound = g.round; });
+  return maxRound;
+}
+// House rule (MLB Season bullpen stamina, replacing the simpler appearance-count version): how many
+// days of rest a reliever needs, given what he actually threw and whether it was back-to-back days.
+//   (a) ANY back-to-back appearance (pitched yesterday AND today) needs exactly 1 day, full stop —
+//       this supersedes every other branch below, regardless of innings rating or outs thrown.
+//   (b) 1-IP arms: 4+ outs in the one outing needs 1 day; 7+ outs combined across two consecutive
+//       days needs 2 days (note this specific combined-outs case is itself a back-to-back scenario,
+//       so rule (a)'s 1-day floor still applies beneath it — this just raises it to 2 when the combined
+//       workload was heavy enough).
+//   (c) 2-IP arms: 3 or fewer outs needs no rest at all (unless back-to-back, per rule a); 4-6 outs
+//       needs 1 day; 7+ outs needs 2 days.
+//   (d) 3-IP arms or converted starters: 6-8 outs needs 2 days; exactly 9 outs needs 3 days; 10+ outs
+//       needs 4 days.
+function computeTiredDaysNeeded(ip, outsToday, wasConsecutiveDay, combinedOuts){
+  if(wasConsecutiveDay){
+    // Rule (a) sets the floor at 1, but a sufficiently heavy combined workload over the two days can
+    // still raise it higher under the same tier's own thresholds.
+    let floor = 1;
+    if(ip<=1){ if(combinedOuts>=7) floor = Math.max(floor, 2); }
+    else if(ip===2){ if(combinedOuts>=7) floor = Math.max(floor, 2); else if(combinedOuts>=4) floor = Math.max(floor, 1); }
+    else { if(combinedOuts>=10) floor = Math.max(floor, 4); else if(combinedOuts===9) floor = Math.max(floor, 3); else if(combinedOuts>=6) floor = Math.max(floor, 2); }
+    return floor;
+  }
+  if(ip<=1){
+    return outsToday>=4 ? 1 : 0;
+  } else if(ip===2){
+    if(outsToday>=7) return 2;
+    if(outsToday>=4) return 1;
+    return 0;
+  } else { // 3+ IP rated, or a converted starter working in relief
+    if(outsToday>=10) return 4;
+    if(outsToday===9) return 3;
+    if(outsToday>=6) return 2;
+    return 0;
+  }
+}
 // Pitcher rest, scoped per mode. Draft Season uses rulebook 4.4 exactly as written: a Starting
 // Pitcher always needs 4 games' rest regardless of innings thrown, a reliever's rest scales with
 // innings pitched this appearance (1 IP -> 1 game, floor 1, cap 4). MLB Season uses two deliberate
@@ -7542,12 +7837,18 @@ function teamGamesPlayedSoFar(teamIdx){
 // (SEASON.pitcherRest) is stored as an absolute "not tired again until the team has played this many
 // games" threshold, so combining with any debt already on the books before today is just a max().
 // Applies in the postseason too (4.4 has no "regular season only" language, unlike the bench rule).
-function recordPitcherRestDebt(gs, awayIdx, homeIdx){
+function recordPitcherRestDebt(gs, awayIdx, homeIdx, dayOverride){
   if(!SEASON) return;
   if(!SEASON.pitcherRest) SEASON.pitcherRest = {};
   if(!SEASON.pitcherStreak) SEASON.pitcherStreak = {};
+  if(!SEASON.pitcherDayLog) SEASON.pitcherDayLog = {};
   if(!SEASON.lastPitchedGameIdx) SEASON.lastPitchedGameIdx = {};
   const isMLBSeason = SEASON.statsScope==='mlb';
+  // The day this specific game happened on — explicitly the schedule entry's own round number for a
+  // real regular-season game (passed in by the caller, which has direct access to it); playoff games
+  // have no equivalent round field, so they fall back to "one day later than the league's last known
+  // day" as a reasonable stand-in, advancing one day per playoff game played.
+  const today = dayOverride!=null ? dayOverride : currentLeagueDay()+1;
   [['away',awayIdx],['home',homeIdx]].forEach(([tk, teamIdx])=>{
     if(teamIdx==null) return;
     const gamesPlayedBefore = teamGamesPlayedSoFar(teamIdx); // must be captured before today's game is marked played
@@ -7568,14 +7869,24 @@ function recordPitcherRestDebt(gs, awayIdx, homeIdx){
       // combinations the tiredness rule (4.4) actually needs. This is what a simple "Last Pitched: N
       // games ago" display reads from.
       SEASON.lastPitchedGameIdx[key] = gamesPlayedBefore;
-      if(pitcherObj.role==='SP'){
+      // A starter currently stashed in the bullpen is tracked exactly like a true reliever while he's
+      // there — his card's role tag doesn't matter, only where he's actually assigned today.
+      if(!isCurrentlyBullpenArm(tk, pitcherObj)){
         const restNeeded = isMLBSeason ? 3 : 4;
         const newTiredUntil = gamesPlayedBefore + 1 + restNeeded;
         SEASON.pitcherRest[key] = Math.max(SEASON.pitcherRest[key]||0, newTiredUntil);
       } else if(isMLBSeason){
-        const prev = SEASON.pitcherStreak[key];
-        const wasConsecutive = !!(prev && prev.lastAppearanceGameIdx === gamesPlayedBefore-1);
-        SEASON.pitcherStreak[key] = { lastAppearanceGameIdx: gamesPlayedBefore, consecutiveCount: wasConsecutive ? prev.consecutiveCount+1 : 1, lastAppearanceOuts: line.outs||0 };
+        // Day-based bullpen stamina: track the actual DAY he pitched (not just "the team's Nth game"),
+        // so a scheduled off-day genuinely counts as rest even if the team's own next game is still a
+        // ways off in game-count terms. Keeps the prior appearance's day+outs around specifically to
+        // detect back-to-back days and compute the two-day combined-outs figure the tiered rule needs.
+        const prev = SEASON.pitcherDayLog[key];
+        const wasConsecutiveDay = !!(prev && prev.day === today-1);
+        SEASON.pitcherDayLog[key] = {
+          day: today, outs: line.outs||0,
+          prevDay: wasConsecutiveDay ? prev.day : null,
+          prevOuts: wasConsecutiveDay ? prev.outs : 0,
+        };
       } else {
         const ip = (line.outs||0)/3;
         const restNeeded = Math.min(4, Math.max(1, Math.ceil(ip)));
@@ -7592,6 +7903,24 @@ function recordPitcherRestDebt(gs, awayIdx, homeIdx){
 // climbing. SEASON.teams[idx].bench (the team's persistent roster composition) is the source of truth
 // for "who are this team's designated bench players", not whatever TEAMS[tk].bench happens to hold
 // for today's specific game (which reflects today's lineup, not the roster's default shape).
+// General "how many innings did this specific player actually play" — works for a starter (who began
+// at the very start of the game, an implicit inning 0 the way lineupExitInning already treats it) just
+// as well as for a mid-game substitute (whose own entry in lineupHistory carries the inning he actually
+// entered). A player can show up more than once across a slot's history in rare cases (unlikely in
+// practice, but harmless) — all his stints get summed together.
+function inningsPlayedByPlayer(gs, tk, name){
+  let total = 0;
+  (gs.lineupHistory[tk]||[]).forEach(slotHistory=>{
+    slotHistory.forEach((entry,i)=>{
+      if(entry.name!==name) return;
+      const startInning = entry.inning || 0; // the slot's original starter has no .inning field -- game start
+      const nextEntry = slotHistory[i+1];
+      const endInning = nextEntry ? nextEntry.inning : gs.inning;
+      total += Math.max(0, endInning - startInning);
+    });
+  });
+  return total;
+}
 function recordBenchMandatoryPlay(gs, awayIdx, homeIdx){
   if(!SEASON) return;
   if(!SEASON.benchRest) SEASON.benchRest = {};
@@ -7617,22 +7946,83 @@ function recordBenchMandatoryPlay(gs, awayIdx, homeIdx){
 // inserted player .mandatedToday so renderRosterTeamBlock can lock their row: they can still be
 // dragged to a different spot in the batting order, or end up at whatever position they're eligible
 // for, but they can't be swapped back out of today's lineup entirely.
+// House rule: a bench player who's gone 3 games without a qualifying start is mandated to start on
+// the 4th — but this only ever FLAGS him, it never inserts him into the lineup automatically. He stays
+// on the bench, clearly marked, until the person setting the lineup actually places him themselves
+// (see the "Who's In?" picker triggered from his bench row) — the game won't let the side proceed to
+// play with him still sitting out unplaced (see canProceedPastRoster).
 function enforceMandatoryBenchStarts(team, teamIdx){
   if(!SEASON || !SEASON.benchRest || teamIdx==null) return;
-  team.bench.slice().forEach(benchPlayer=>{
+  team.bench.forEach((benchPlayer,i)=>{
     const key = teamIdx+':'+benchPlayer.name;
     const streak = SEASON.benchRest[key]||0;
-    if(streak<3) return; // fewer than 3 games off so far -- not mandated yet
-    if(team.lineup.some(p=>p.name===benchPlayer.name)) return; // already in today's lineup somehow
-    let slotIdx = team.lineup.findIndex(p=> p.pos!=='DH' && benchPlayer.elig && benchPlayer.elig.includes(p.pos));
-    if(slotIdx===-1) slotIdx = team.lineup.findIndex(p=>p.pos==='DH');
-    if(slotIdx===-1) slotIdx = 0;
-    const displaced = team.lineup[slotIdx];
-    const inserted = Object.assign({}, benchPlayer, {pos: team.lineup[slotIdx].pos, mandatedToday:true});
-    team.lineup[slotIdx] = inserted;
-    const benchIdx = team.bench.findIndex(p=>p.name===benchPlayer.name);
-    if(benchIdx>=0) team.bench.splice(benchIdx,1);
-    team.bench.push(displaced);
+    team.bench[i] = Object.assign({}, benchPlayer, {mandatedToday: streak>=3});
+  });
+}
+// House rule: a catcher who's caught 3 straight games is mandated to sit out catching on the 4th —
+// he can still play elsewhere (or even start on the bench), just not catch that day. The clean case is
+// a backup catcher who'd otherwise be at DH today: swap them directly, catcher <-> DH, so nobody loses
+// a roster spot. Lacking that, fall back to whoever else is catcher-eligible (another on-field player,
+// else the bench), moving the rested catcher to DH if it's open, else benching him outright. He's not
+// blocked from ever catching again today — eligibleFor('C') still passes for him — so he can still be
+// brought in behind the plate from the 7th inning on if a real need arises.
+function enforceCatcherRestDay(team, teamIdx){
+  if(!SEASON || teamIdx==null) return;
+  const catcherSlotIdx = team.lineup.findIndex(p=>p.pos==='C');
+  if(catcherSlotIdx===-1) return;
+  const catcher = team.lineup[catcherSlotIdx];
+  const streak = (SEASON.catcherStreak && SEASON.catcherStreak[teamIdx+':'+catcher.name]) || 0;
+  if(streak<3) return; // fewer than 3 straight starts behind the plate -- not mandated yet
+
+  const dhSlotIdx = team.lineup.findIndex(p=>p.pos==='DH');
+  if(dhSlotIdx!==-1 && eligibleFor(team.lineup[dhSlotIdx], 'C')){
+    const dhPlayer = team.lineup[dhSlotIdx];
+    team.lineup[catcherSlotIdx] = Object.assign({}, dhPlayer, {pos:'C'});
+    team.lineup[dhSlotIdx] = Object.assign({}, catcher, {pos:'DH', restedToday:true});
+    return;
+  }
+  // No DH swap available -- look for any other on-field or bench player who's catcher-eligible.
+  const otherFielderIdx = team.lineup.findIndex((p,i)=> i!==catcherSlotIdx && eligibleFor(p,'C'));
+  const benchIdx = team.bench.findIndex(p=>eligibleFor(p,'C'));
+  if(otherFielderIdx!==-1){
+    const other = team.lineup[otherFielderIdx];
+    const vacated = other.pos;
+    team.lineup[catcherSlotIdx] = Object.assign({}, other, {pos:'C'});
+    if(dhSlotIdx!==-1){
+      team.lineup[otherFielderIdx] = team.lineup[dhSlotIdx];
+      team.lineup[dhSlotIdx] = Object.assign({}, catcher, {pos:vacated, restedToday:true});
+    } else if(benchIdx!==-1){
+      team.lineup[otherFielderIdx] = Object.assign({}, team.bench[benchIdx], {pos:vacated});
+      team.bench.splice(benchIdx,1,Object.assign({}, catcher, {restedToday:true}));
+    } else {
+      return; // no way to cover the vacated spot -- can't enforce the rest day today
+    }
+  } else if(benchIdx!==-1){
+    team.lineup[catcherSlotIdx] = Object.assign({}, team.bench[benchIdx], {pos:'C'});
+    team.bench.splice(benchIdx,1,Object.assign({}, catcher, {restedToday:true}));
+  }
+  // else: genuinely nobody else can catch -- leave him in, can't be enforced today.
+}
+// Post-game: whoever STARTED today at catcher (per the first entry recorded for their slot in
+// lineupHistory — the actual starting position, independent of any later substitution or mid-game
+// shift) and caught a qualifying amount (6+ innings, or the whole game if never subbed out) extends
+// their streak; anyone else who started there but got pulled early, or wasn't catching at all today,
+// resets to 0.
+function recordCatcherRestTracking(gs, awayIdx, homeIdx){
+  if(!SEASON) return;
+  if(!SEASON.catcherStreak) SEASON.catcherStreak = {};
+  [['away',awayIdx],['home',homeIdx]].forEach(([tk, teamIdx])=>{
+    if(teamIdx==null) return;
+    let startingCatcherName = null;
+    (gs.lineupHistory[tk]||[]).forEach(slotHistory=>{
+      if(slotHistory && slotHistory[0] && slotHistory[0].pos==='C') startingCatcherName = slotHistory[0].name;
+    });
+    if(!startingCatcherName) return;
+    const key = teamIdx+':'+startingCatcherName;
+    const exitInning = gs.lineupExitInning[tk][startingCatcherName];
+    const inningsPlayed = exitInning!==undefined ? exitInning : gs.inning;
+    const qualifies = inningsPlayed>=6;
+    SEASON.catcherStreak[key] = qualifies ? ((SEASON.catcherStreak[key]||0)+1) : 0;
   });
 }
 // ---------------- LOCAL PERSISTENCE: career stats + active-season auto-save ----------------
@@ -7757,13 +8147,13 @@ function accumulateGameStats(gs, awayIdx, homeIdx, isPlayoff){
     Object.keys(gs.batStats[tk]).forEach(name=>{
       const line = gs.batStats[tk][name];
       const key = teamIdx+':'+name;
-      // Universal "last appeared" record for batters — any recorded plate appearance counts, whether
-      // it came from a full start, a pinch-hit, or a defensive sub who came up to bat later. This is
-      // deliberately simpler and broader than SEASON.benchRest above, which only tracks the specific
-      // "started and played 6+ innings" streak the mandatory-play rule cares about — this is just
-      // "how long has it actually been since this guy did anything at all," useful for deciding who
-      // needs a look off the bench regardless of that rule.
-      SEASON.lastPlayedGameIdx[key] = gamesPlayedBefore;
+      // House rule: an appearance only counts here if the player was actually in the game for 6+
+      // innings — same bar as the mandatory-start rule, regardless of whether those innings came from
+      // starting or entering mid-game as a substitute. Anything short of that (a pinch-hit single
+      // plate appearance, a defensive replacement for the last inning and a half) doesn't count as
+      // having "played" for this tracker's purposes.
+      const qualifies = inningsPlayedByPlayer(gs, tk, name) >= 6;
+      if(qualifies) SEASON.lastPlayedGameIdx[key] = gamesPlayedBefore;
       if(!batBucket[key]) batBucket[key] = initBatLine();
       const acc = batBucket[key];
       Object.keys(line).forEach(stat=>{ acc[stat] = (acc[stat]||0) + (line[stat]||0); });
@@ -8220,7 +8610,7 @@ function determineWinLossPitchers(gs){
 function determineSavePitcher(gs, winnerKey, winningPitcher){
   const finalIdx = gs.pitcherIdx[winnerKey];
   const finalPitcherObj = TEAMS[winnerKey].pitchers[finalIdx];
-  if(!finalPitcherObj || finalPitcherObj.name===winningPitcher || finalPitcherObj.role!=='RP') return null;
+  if(!finalPitcherObj || finalPitcherObj.name===winningPitcher || !isCurrentlyBullpenArm(winnerKey, finalPitcherObj)) return null;
   const line = gs.pitStats[winnerKey][finalPitcherObj.name] || {outs:0};
   const inningsThrown = (line.outs||0)/3;
   const entry = gs.pitcherEntry[winnerKey];
@@ -8259,8 +8649,9 @@ function recordSeasonResult(idx, awayScore, homeScore){
   const g = SEASON.schedule.find(x=>x.idx===idx);
   if(!g || g.played) return;
   clearGameState(SEASON.statsScope);
-  recordPitcherRestDebt(GS, g.awayIdx, g.homeIdx);
+  recordPitcherRestDebt(GS, g.awayIdx, g.homeIdx, g.round);
   recordBenchMandatoryPlay(GS, g.awayIdx, g.homeIdx);
+  recordCatcherRestTracking(GS, g.awayIdx, g.homeIdx);
   accumulateGameStats(GS, g.awayIdx, g.homeIdx, false);
   g.played=true; g.awayScore=awayScore; g.homeScore=homeScore;
   g.boxScore = buildBoxScoreSnapshot();
@@ -8569,8 +8960,65 @@ function renderMLBSeasonSetup(){
   }
   root.appendChild(wrap);
 }
+// House rule: MLB Season uses full 26-man staffs (5 SP + 8 RP), not the 22-man base roster (4+5) —
+// the extra arms come from each team's own minors pool (team.extra), promoted automatically. Starters
+// never default into the bullpen just because there happen to be extras sitting around — true
+// relievers fill those 8 spots first; a surplus starter only gets pulled in if there genuinely aren't
+// enough relievers to reach 8, and even then he's picked by points same as every other overflow spot.
+// Reassigns team.rotation/bullpen/extra to brand-new arrays rather than mutating any of them in place,
+// since this runs on a shallow clone of TEAM_POOL — a .push() here would corrupt the shared base data
+// for every future season.
+function expandRosterTo26Man(team){
+  const byPoints = (a,b)=>(b.points||0)-(a.points||0);
+  const extra = team.extra || [];
+  const allSP = [...team.rotation, ...extra.filter(p=>p.role==='SP')].sort(byPoints);
+  const allRP = [...team.bullpen, ...extra.filter(p=>p.role==='RP')].sort(byPoints);
+  const newRotation = allSP.slice(0,5);
+  const overflowSP = allSP.slice(5);
+  let newBullpen = allRP.slice(0,8);
+  if(newBullpen.length<8){
+    const needed = 8-newBullpen.length;
+    newBullpen = newBullpen.concat(overflowSP.slice(0,needed));
+  }
+  const usedNames = new Set([...newRotation, ...newBullpen].map(p=>p.name));
+  team.rotation = newRotation;
+  team.bullpen = newBullpen;
+  team.extra = extra.filter(p=>!usedNames.has(p.name));
+  team.pitchers = [newRotation[0], ...newBullpen];
+}
+// House rule: every team finishes the regular season with the EXACT same number of off days, however
+// they happen to fall for each team individually — a natural consequence of 5-team divisions and
+// 15-team leagues (both odd) is that some teams land more byes than others from the schedule-builder's
+// own round-robin math alone. Rather than rebuild each schedule type's internal layering to prevent
+// that from happening in the first place, this runs as a single pass afterward: find whichever team
+// came up with the fewest natural byes, and give every other team just enough makeup rest-only entries
+// (no opponent, nothing to play) to match the team with the MOST byes. Minimizes the extra days needed
+// league-wide, since every team's shortfall gets packed into the smallest possible shared window of
+// new rounds rather than each team getting its own separate block tacked onto the end.
+function equalizeOffDays(schedule, teamCount){
+  if(!schedule.length) return schedule;
+  let totalRounds = 0;
+  schedule.forEach(g=>{ if(g.round>totalRounds) totalRounds = g.round; });
+  const roundsPlayedIn = Array.from({length:teamCount}, ()=>new Set());
+  schedule.forEach(g=>{ roundsPlayedIn[g.homeIdx].add(g.round); roundsPlayedIn[g.awayIdx].add(g.round); });
+  const naturalByes = roundsPlayedIn.map(set => totalRounds - set.size);
+  const maxByes = Math.max(...naturalByes);
+  const need = naturalByes.map(b => maxByes - b);
+  const extension = Math.max(...need);
+  const extraEntries = [];
+  for(let t=0; t<teamCount; t++){
+    for(let k=0; k<need[t]; k++){
+      extraEntries.push({ round: totalRounds + k + 1, restOnly: true, teamIdx: t });
+    }
+  }
+  return schedule.concat(extraEntries);
+}
 function finalizeMLBSeasonSetup(){
-  const teams = TEAM_ORDER.map(key => Object.assign({}, TEAM_POOL[key], { poolKey:key }));
+  const teams = TEAM_ORDER.map(key => {
+    const t = Object.assign({}, TEAM_POOL[key], { poolKey:key });
+    expandRosterTo26Man(t);
+    return t;
+  });
   const perLeague = MLB_SETUP.playoffChoice==='top4' ? 4 : MLB_SETUP.playoffChoice==='top2' ? 2 : 1;
   SEASON = {
     statsScope: 'mlb',
@@ -8586,22 +9034,32 @@ function finalizeMLBSeasonSetup(){
   else if(MLB_SETUP.scheduleType==='division-heavy') SEASON.schedule = buildDivisionHeavySchedule(MLB_SETUP.baseGames, MLB_SETUP.divisionExtra);
   else if(MLB_SETUP.scheduleType==='custom') SEASON.schedule = buildCustomSeasonSchedule(MLB_SETUP.customDivisionGames, MLB_SETUP.customLeagueGames, MLB_SETUP.customInterleagueGames);
   else SEASON.schedule = buildEveryoneOnceSchedule(MLB_SETUP.scheduleParam||1);
+  SEASON.schedule = equalizeOffDays(SEASON.schedule, SEASON.teamCount);
   MLB_SETUP_STAGE = 'teams'; MLB_SETUP = null;
   SCREEN = 'seasonhub';
   render();
 }
 
 function simSeasonGame(g){
-  const awayStarterIdx = teamGamesPlayedSoFar(g.awayIdx) % SEASON.teams[g.awayIdx].rotation.length;
-  const homeStarterIdx = teamGamesPlayedSoFar(g.homeIdx) % SEASON.teams[g.homeIdx].rotation.length;
+  const awayStarterIdx = nextStarterIdx(g.awayIdx);
+  const homeStarterIdx = nextStarterIdx(g.homeIdx);
   TEAMS.away = cloneTeamForGame(SEASON.teams[g.awayIdx], awayStarterIdx, g.awayIdx);
   TEAMS.home = cloneTeamForGame(SEASON.teams[g.homeIdx], homeStarterIdx, g.homeIdx);
   enforceMandatoryBenchStarts(TEAMS.away, g.awayIdx);
   enforceMandatoryBenchStarts(TEAMS.home, g.homeIdx);
+  enforceCatcherRestDay(TEAMS.away, g.awayIdx);
+  enforceCatcherRestDay(TEAMS.home, g.homeIdx);
   GS = newGameState('pvp');
   runSim(()=> GS.gameOver, 8000);
   recordSeasonResult(g.idx, GS.score.away, GS.score.home);
   render();
+}
+// A team's next rotation turn — normally just games played so far, modulo rotation size, but a
+// deliberately-skipped start on an off day (see the rest-day acknowledgment flow) advances this the
+// same way an actual start would, without that start ever really happening.
+function nextStarterIdx(teamIdx){
+  const skips = (SEASON.rotationSkips && SEASON.rotationSkips[teamIdx]) || 0;
+  return (teamGamesPlayedSoFar(teamIdx) + skips) % SEASON.teams[teamIdx].rotation.length;
 }
 function currentSeasonRound(){
   const unplayed = SEASON.schedule.filter(g=>!g.played);
@@ -8727,6 +9185,25 @@ function renderSeasonHub(){
     wrap.appendChild(el('div','rulesnote', 'Every team plays through its rotation in lockstep — the next round unlocks once every Game '+(curRound+1)+' matchup below is finished.'));
     const list = el('div','plist');
     roundGames.forEach(g=>{
+      // A makeup rest-only entry from equalizeOffDays — no opponent, nothing to actually play, just a
+      // day this specific team needs credited as rest so every team ends the season with the same
+      // total off-days. The team gets to choose whether to also use it to skip a rotation turn outright
+      // (advancing past that pitcher as if he'd started, with his rest clock updated accordingly) or
+      // just let the rotation sit paused the way an ordinary bye already does.
+      if(g.restOnly){
+        const teamName = SEASON.names ? SEASON.names[g.teamIdx] : SEASON.teams[g.teamIdx].nick;
+        const row = el('div','prow');
+        row.innerHTML = `<div class="nm">${teamName} \u2014 Rest Day</div><div class="sub2">Makeup off day to keep every team's total rest equal.</div>`;
+        const btn = el('button','btn small secondary','Acknowledge'); btn.style.marginLeft='auto';
+        btn.onclick = (e)=>{
+          e.stopPropagation();
+          REST_DAY_PICK = { entry: g };
+          render();
+        };
+        row.appendChild(btn);
+        list.appendChild(row);
+        return;
+      }
       const humanInvolved = !SEASON.humanControlled || SEASON.humanControlled[g.awayIdx] || SEASON.humanControlled[g.homeIdx];
       const row = el('div','prow'+(humanInvolved?' standrow':''));
       if(g.played){
@@ -8744,12 +9221,14 @@ function renderSeasonHub(){
           const btn = el('button','btn small secondary', g.pendingGame ? 'Enter Game' : 'Start Game');
           btn.onclick = (e)=>{
             e.stopPropagation();
-            const awayStarterIdx = teamGamesPlayedSoFar(g.awayIdx) % SEASON.teams[g.awayIdx].rotation.length;
-            const homeStarterIdx = teamGamesPlayedSoFar(g.homeIdx) % SEASON.teams[g.homeIdx].rotation.length;
+            const awayStarterIdx = nextStarterIdx(g.awayIdx);
+            const homeStarterIdx = nextStarterIdx(g.homeIdx);
             const awayTeamData = cloneTeamForGame(SEASON.teams[g.awayIdx], awayStarterIdx, g.awayIdx);
             const homeTeamData = cloneTeamForGame(SEASON.teams[g.homeIdx], homeStarterIdx, g.homeIdx);
             enforceMandatoryBenchStarts(awayTeamData, g.awayIdx);
             enforceMandatoryBenchStarts(homeTeamData, g.homeIdx);
+            enforceCatcherRestDay(awayTeamData, g.awayIdx);
+            enforceCatcherRestDay(homeTeamData, g.homeIdx);
             startOnlineSeasonMatchup({ ref:g, kind:'season', idx:g.idx }, g.awayIdx, g.homeIdx, awayTeamData, homeTeamData);
           };
           row.appendChild(btn);
@@ -8763,16 +9242,13 @@ function renderSeasonHub(){
         row.innerHTML = `<div class="nm">${SEASON.teams[g.awayIdx].nick} @ ${SEASON.teams[g.homeIdx].nick}${humanInvolved?'':' <span class="cputag">CPU vs CPU</span>'}</div>`;
         if(humanInvolved){
           row.onclick = ()=>{
-            SEASON_GAME_IDX = g.idx;
-            SEASON_AWAY_HUMAN = SEASON.humanControlled ? SEASON.humanControlled[g.awayIdx] : true;
-            SEASON_HOME_HUMAN = SEASON.humanControlled ? SEASON.humanControlled[g.homeIdx] : true;
-            const awayStarterIdx = teamGamesPlayedSoFar(g.awayIdx) % SEASON.teams[g.awayIdx].rotation.length;
-            const homeStarterIdx = teamGamesPlayedSoFar(g.homeIdx) % SEASON.teams[g.homeIdx].rotation.length;
-            TEAMS.away = cloneTeamForGame(SEASON.teams[g.awayIdx], awayStarterIdx, g.awayIdx);
-            TEAMS.home = cloneTeamForGame(SEASON.teams[g.homeIdx], homeStarterIdx, g.homeIdx);
-            enforceMandatoryBenchStarts(TEAMS.away, g.awayIdx);
-            enforceMandatoryBenchStarts(TEAMS.home, g.homeIdx);
-            STARTER_PICK = 0; SCREEN='roster'; ROSTER_STEP='away'; render();
+            const awayHuman = SEASON.humanControlled ? SEASON.humanControlled[g.awayIdx] : true;
+            const homeHuman = SEASON.humanControlled ? SEASON.humanControlled[g.homeIdx] : true;
+            const awayDefault = nextStarterIdx(g.awayIdx);
+            const homeDefault = nextStarterIdx(g.homeIdx);
+            STARTER_CHOICE_PICK = { g, awayIdx:g.awayIdx, homeIdx:g.homeIdx, awayDefault, homeDefault,
+              awaySelected: awayDefault, homeSelected: homeDefault, awayHuman, homeHuman };
+            render();
           };
         } else {
           const simBtn = el('button','btn small secondary','Sim');
@@ -10177,7 +10653,8 @@ function renderRosterTeamBlock(wrap, tk){
   t.bench.forEach(p=>{
     const row = el('div','prow clickable');
     const fldTags = formatFieldingTags(p.fielding);
-    row.innerHTML = `<div class="pos">${p.pos}</div><div class="nm">${p.name}${p.twoWay?' <span class="twoway-tag">Two-Way</span>':''}</div><div class="sub2">OB ${p.onBase} · SPD ${p.speed} · ${fldTags}</div><div class="editicon">\u270e</div>`;
+    const lockIcon = p.mandatedToday ? '<div class="editicon lockicon" title="Mandatory start today \u2014 must be placed in the lineup">\ud83d\udd12</div>' : '<div class="editicon">\u270e</div>';
+    row.innerHTML = `<div class="pos">${p.pos}</div><div class="nm">${p.name}${p.twoWay?' <span class="twoway-tag">Two-Way</span>':''}</div><div class="sub2">OB ${p.onBase} · SPD ${p.speed} · ${fldTags}${p.mandatedToday?' · Mandatory start \u2014 not yet placed':''}</div>${lockIcon}`;
     row.onclick = ()=>{ LINEUP_EDIT = {team:tk, mode:'bench', name:p.name}; render(); };
     benchList.appendChild(row);
   });
@@ -10302,10 +10779,17 @@ function renderRoster(){
   root.appendChild(wrap);
 
   const bar = el('div','startbar');
+  // House rule: a mandatory bench starter has to actually be placed in the lineup by hand — the game
+  // never auto-inserts him — so neither "Next" nor "Play Ball" can go through while he's still sitting
+  // on the bench unplaced.
+  const awayUnplaced = TEAMS.away.bench.some(p=>p.mandatedToday);
+  const homeUnplaced = TEAMS.home.bench.some(p=>p.mandatedToday);
   if(ROSTER_STEP==='away'){
     const nextBtn = el('button','btn','Next: Home Lineup');
+    nextBtn.disabled = awayUnplaced;
     nextBtn.onclick = ()=>{ ROSTER_STEP='home'; render(); };
     bar.appendChild(nextBtn);
+    if(awayUnplaced) bar.appendChild(el('div','rulesnote','A mandatory bench starter still needs to be placed in the lineup before continuing.'));
   } else if(ONLINE_GAME && ONLINE_GAME.myTeamKey!=='away'){
     // Same race as the starter-rank picker above: only the away side's device actually builds the
     // final TEAMS/GS and starts the game — this device just waits and receives the result normally
@@ -10313,6 +10797,7 @@ function renderRoster(){
     bar.appendChild(el('div','rulesnote','Waiting for the away side to start the game\u2026'));
   } else {
     const btn = el('button','btn','Play Ball');
+    btn.disabled = awayUnplaced || homeUnplaced;
     btn.onclick = ()=>{
       if(SEASON_GAME_IDX===null && PLAYOFF_MATCH_REF===null){
         TEAMS.away = cloneTeamForGame(TEAMS.away, STARTER_PICK);
@@ -10321,6 +10806,7 @@ function renderRoster(){
       GS=newGameState(MODE); SCREEN='game'; render();
     };
     bar.appendChild(btn);
+    if(awayUnplaced || homeUnplaced) bar.appendChild(el('div','rulesnote','A mandatory bench starter still needs to be placed in the lineup before you can play.'));
   }
   root.appendChild(bar);
 }
@@ -10922,6 +11408,15 @@ function renderGame(){
 }
 
 function logEntry(gs, text){ gs.log.unshift({text}); }
+// House rule: a pitcher who reached base in an emergency at-bat never steals, regardless of his
+// (flat, house-rule) Speed rating — he can still be pinch-run for like anyone else, this only
+// suppresses the steal OPTION for him specifically while he's the one standing on the bag.
+function runnerAtBaseIsPitcher(gs, tk, baseIdx){
+  const name = gs.bases[baseIdx];
+  if(!name) return false;
+  const p = TEAMS[tk].lineup.find(x=>x.name===name);
+  return !!p && (p.role==='SP' || p.role==='RP');
+}
 
 /* ---------------- DECISION FLOW DISPATCH ---------------- */
 function renderDecisionFlow(m){
@@ -10929,11 +11424,11 @@ function renderDecisionFlow(m){
   const fk=fieldingTeamKey(GS), tk=battingTeamKey(GS);
   const runnerOnBase = GS.bases.some(x=>x);
   const canInfieldIn = !!GS.bases[2] && GS.outs<2;
-  const canSteal2 = !!GS.bases[0] && !GS.bases[1] && !isPositionPlayerPitching(GS);
-  const canSteal3 = !!GS.bases[1] && !GS.bases[2] && !isPositionPlayerPitching(GS);
-  const canDoubleSteal12 = !!GS.bases[0] && !!GS.bases[1] && !GS.bases[2] && !isPositionPlayerPitching(GS);
+  const canSteal2 = !!GS.bases[0] && !GS.bases[1] && !isPositionPlayerPitching(GS) && !runnerAtBaseIsPitcher(GS,tk,0);
+  const canSteal3 = !!GS.bases[1] && !GS.bases[2] && !isPositionPlayerPitching(GS) && !runnerAtBaseIsPitcher(GS,tk,1);
+  const canDoubleSteal12 = !!GS.bases[0] && !!GS.bases[1] && !GS.bases[2] && !isPositionPlayerPitching(GS) && !runnerAtBaseIsPitcher(GS,tk,0) && !runnerAtBaseIsPitcher(GS,tk,1);
   const canSqueeze = !!GS.bases[2] && GS.outs<2;
-  const canHitAndRun = !!GS.bases[0] && !GS.bases[1] && !isPositionPlayerPitching(GS);
+  const canHitAndRun = !!GS.bases[0] && !GS.bases[1] && !isPositionPlayerPitching(GS) && !runnerAtBaseIsPitcher(GS,tk,0);
 
   switch(GS.stage){
     case 'defense-choice':
@@ -11016,6 +11511,7 @@ function renderDecisionFlow(m){
     case 'squeeze-result': renderContestResult(m); return;
     case 'sub-def-slot': renderDefSubSlotPick(m); return;
     case 'sub-def-bench': renderDefSubBenchPick(m); return;
+    case 'sub-catcher-shift-bench': renderCatcherShiftBenchPick(m); return;
     case 'sub-pitching-pick': renderPitchingChangePick(m); return;
     case 'sub-switch-positions': renderSwitchPositions(m); return;
     case 'sub-emergency-pick': renderEmergencyPitcherPick(m); return;
@@ -11208,7 +11704,12 @@ function renderDefSubSlotPick(m){
   dz.innerHTML = `<div class="lbl">Replace Which Fielder?</div>`;
   const row = el('div','btnrow');
   TEAMS[fk].lineup.forEach((p,i)=>{
-    const hasEligible = TEAMS[fk].bench.some(b=>eligibleFor(b,p.pos));
+    // House rule: catcher is never an emergency fill, so a bench player elig for C isn't the only way
+    // to free up the current catcher — an on-field player who's ALSO elig for C (stationed anywhere
+    // else, including DH) can shift over to catcher instead, as long as somebody can then cover
+    // whatever position HE vacates. hasCatcherPath below checks for either route; every other
+    // position only ever needed the simple bench check.
+    const hasEligible = p.pos==='C' ? hasCatcherReplacementPath(fk, i) : TEAMS[fk].bench.some(b=>eligibleFor(b,p.pos));
     const fld = p.fielding && p.fielding[p.pos];
     const btn = el('button','btn small secondary', `${p.name} (${p.pos}${fld!=null?`, FLD ${fld}`:''})`);
     btn.disabled = !hasEligible;
@@ -11219,6 +11720,21 @@ function renderDefSubSlotPick(m){
   row.appendChild(cancel);
   dz.appendChild(row);
   m.appendChild(dz);
+}
+// Catcher-specific: is there ANY way to field a legal catcher if this guy comes out — either a bench
+// player actually rated at C, or some other CURRENTLY-FIELDING player (any position, including DH)
+// who's rated at C and could shift over, PROVIDED whoever he'd leave behind has their own bench
+// replacement lined up too. Catcher itself never counts as "replacing" catcher here (that's just the
+// same guy), and DH has no fielding spot to backfill, so a DH who's C-eligible is always a free shift.
+function hasCatcherReplacementPath(fk, outgoingSlotIdx){
+  const team = TEAMS[fk];
+  if(team.bench.some(b=>eligibleFor(b,'C'))) return true;
+  return team.lineup.some((p,j)=>{
+    if(j===outgoingSlotIdx || p.pos==='C') return false;
+    if(!eligibleFor(p,'C')) return false;
+    if(p.pos==='DH') return true; // the pitcher always fills the vacated spot — no bench player needed
+    return team.bench.some(b=>eligibleFor(b,p.pos));
+  });
 }
 function renderDefSubBenchPick(m){
   const fk = fieldingTeamKey(GS);
@@ -11231,9 +11747,10 @@ function renderDefSubBenchPick(m){
     if(!eligibleFor(p, slot.pos)) return; // only eligible bench players are offered
     const outOfPosition = !(p.elig && p.elig.includes(slot.pos));
     const incomingFld = p.fielding && p.fielding[slot.pos];
+    const penalty = slot.pos==='1B' ? EMERGENCY_FIRST_BASE_PENALTY : OUT_OF_POSITION_PENALTY;
     const fldTag = incomingFld!=null ? `FLD ${incomingFld}` : '';
     const label = outOfPosition
-      ? `${p.name} (${[fldTag, `${OUT_OF_POSITION_PENALTY} penalty`].filter(Boolean).join(', ')})`
+      ? `${p.name} (${[fldTag, `${penalty} penalty`].filter(Boolean).join(', ')})`
       : (fldTag ? `${p.name} (${fldTag})` : p.name);
     const btn = el('button','btn small secondary', label);
     btn.onclick=()=>{
@@ -11247,7 +11764,72 @@ function renderDefSubBenchPick(m){
     };
     row.appendChild(btn);
   });
+  // Catcher-specific: also offer any OTHER on-field player who's actually eligible at C (including a
+  // backup catcher stationed at DH) as a "shift to catcher" option, since catcher never accepts a
+  // true emergency fielder.
+  if(slot.pos==='C'){
+    TEAMS[fk].lineup.forEach((p,j)=>{
+      if(j===GS.subSlotIdx || !eligibleFor(p,'C')) return;
+      const incomingFld = p.fielding && p.fielding['C'];
+      const btn = el('button','btn small secondary', `${p.name} \u2014 shift from ${p.pos}${incomingFld!=null?` (FLD ${incomingFld})`:''}`);
+      btn.onclick=()=>{ GS.subSlotIdx2 = j; GS.stage='sub-catcher-shift-bench'; render(); };
+      row.appendChild(btn);
+    });
+  }
   const cancel = el('button','btn small secondary','Cancel'); cancel.onclick=()=>{ GS.subSlotIdx=null; GS.stage='defense-choice'; render(); };
+  row.appendChild(cancel);
+  dz.appendChild(row);
+  m.appendChild(dz);
+}
+// Second step of a catcher shift: the chosen on-field player is about to move to catcher, so whatever
+// position HE was playing needs a bench replacement before this can go through.
+function renderCatcherShiftBenchPick(m){
+  const fk = fieldingTeamKey(GS);
+  const outgoingSlotIdx = GS.subSlotIdx, shiftingSlotIdx = GS.subSlotIdx2;
+  const shifting = TEAMS[fk].lineup[shiftingSlotIdx];
+  const outgoing = TEAMS[fk].lineup[outgoingSlotIdx];
+  const vacatedPos = shifting.pos;
+  const dz = el('div','decision');
+  const row = el('div','btnrow');
+  if(vacatedPos==='DH'){
+    // MLB rule: moving the DH onto the field forfeits the DH for the rest of the game — there's no
+    // bench player to pick here, the pitcher himself takes the vacated spot in the order.
+    const pitcher = currentPitcher(GS);
+    dz.innerHTML = `<div class="lbl">${shifting.name} moves to C for ${outgoing.name} \u2014 ${TEAMS[fk].nick||'This team'} would lose the DH; ${pitcher.name} bats in ${outgoing.name}'s spot the rest of the game.</div>`;
+    const btn = el('button','btn small', `Confirm \u2014 Lose the DH`);
+    btn.onclick=()=>{
+      performCatcherShiftLoseDH(GS, fk, outgoingSlotIdx, shiftingSlotIdx);
+      GS.subSlotIdx=null; GS.subSlotIdx2=null; GS.stage='defense-choice'; render();
+    };
+    row.appendChild(btn);
+  } else {
+    dz.innerHTML = `<div class="lbl">${shifting.name} moves to C for ${outgoing.name} \u2014 Who Plays ${vacatedPos} For ${shifting.name}?</div>`;
+    TEAMS[fk].bench.forEach((p,i)=>{
+      if(!eligibleFor(p, vacatedPos)) return;
+      const outOfPosition = !(p.elig && p.elig.includes(vacatedPos));
+      const incomingFld = p.fielding && p.fielding[vacatedPos];
+      const penalty = vacatedPos==='1B' ? EMERGENCY_FIRST_BASE_PENALTY : OUT_OF_POSITION_PENALTY;
+      const fldTag = incomingFld!=null ? `FLD ${incomingFld}` : '';
+      const label = outOfPosition
+        ? `${p.name} (${[fldTag, `${penalty} penalty`].filter(Boolean).join(', ')})`
+        : (fldTag ? `${p.name} (${fldTag})` : p.name);
+      const btn = el('button','btn small secondary', label);
+      btn.onclick=()=>{
+        SUB_PREVIEW = {
+          player: p, team: TEAMS[fk], opts: {isPitcher:false},
+          confirmLabel: 'Confirm Sub',
+          onConfirm: ()=>{
+            performCatcherShift(GS, fk, outgoingSlotIdx, shiftingSlotIdx, i);
+            GS.subSlotIdx=null; GS.subSlotIdx2=null; GS.stage='defense-choice'; render();
+          },
+          onBack: ()=>{ render(); }
+        };
+        render();
+      };
+      row.appendChild(btn);
+    });
+  }
+  const cancel = el('button','btn small secondary','Cancel'); cancel.onclick=()=>{ GS.subSlotIdx=null; GS.subSlotIdx2=null; GS.stage='defense-choice'; render(); };
   row.appendChild(cancel);
   dz.appendChild(row);
   m.appendChild(dz);
@@ -11430,6 +12012,23 @@ function doThrowPitch(){
   // the time we're back here for the next batter, these need to start fresh rather than carrying
   // over stale state from this at-bat.
   GS.offenseReady = false; GS.offenseTimerArmed = false; GS.defenseTimerArmed = false;
+  const batter = currentBatter(GS);
+  if(batter.role==='SP' || batter.role==='RP'){
+    // House rule: a pitcher batting (the bench is exhausted, so he has to hit) never goes through the
+    // normal Pitch Roll / Command-vs-On-Base advantage contest at all — there's no "pitcher roll" for
+    // him. He just rolls straight off his OWN pitching chart, as if enacting it directly, with no
+    // advantage/mistake-pitch mechanics in play. Goes through the same maybeOfferAbsChallenge entry
+    // point as a normal swing so everything downstream (challenge offers, outcome classification,
+    // finishSwingResolution) behaves exactly like any other resolved at-bat.
+    startDieRoll(20, 'swing-rolling', (roll)=>{
+      const outcome = batter.chart[roll-1];
+      const res = { pitcher: currentPitcher(GS), batter, swingRoll: roll, outcome,
+        advantage:'batter', swingUsesPowerDie:false, mistake:false, tired:0,
+        pitchRoll:null, effCommand:null, pitchTotal:null, effOnBase:null, pitchBonus:0 };
+      maybeOfferAbsChallenge(res, roll);
+    });
+    return;
+  }
   startDieRoll(20, 'pitch-rolling', (roll)=>{
     GS.pending = computePitchInfo(GS, roll, GS.pitchBonus);
     GS.pitchBonus = 0;
@@ -13217,11 +13816,14 @@ function initiateBunt(){
 }
 function runBuntAttempt(){
   GS.buntAttempt += 1;
+  const batter = currentBatter(GS);
+  const batterIsPitcher = batter.role==='SP' || batter.role==='RP';
   startDieRoll(20, 'bunt-rolling', (roll)=>{
     // House rule: only a natural 20 beats the bunt out entirely for a hit with no possible defensive
     // play — every other successful roll (13-19) is still a normal sacrifice bunt (batter out, runners
-    // advance one base, nobody can score from 3rd).
-    if(roll===20){ applyBuntSingle(roll); return; }
+    // advance one base, nobody can score from 3rd). A batting pitcher is excluded from the natural-20
+    // bunt single specifically — even a 20 is just a normal successful sac bunt for him.
+    if(roll===20 && !batterIsPitcher){ applyBuntSingle(roll); return; }
     const success = roll>12; // tie(12) goes to Defense
     if(success){ applyBuntSuccess(roll); return; }
     if(GS.buntAttempt===1){
