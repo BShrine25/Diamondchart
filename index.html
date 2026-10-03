@@ -4831,6 +4831,12 @@ function isSeasonPitcherTired(teamKey, pitcherObj){
     const wasConsecutiveDay = log.prevDay===log.day-1;
     const combinedOuts = log.outs + (wasConsecutiveDay ? log.prevOuts : 0);
     const tiredDaysNeeded = computeTiredDaysNeeded(pitcherObj.ip||1, log.outs, wasConsecutiveDay, combinedOuts);
+    // A pitcher who threw within his limits needs zero rest days, full stop — this must never read as
+    // tired, not even on the very day he pitched (daysSince===0). Without this guard, "0 days needed"
+    // and "0 days have passed" both being zero made the plain daysSince<=tiredDaysNeeded comparison
+    // true, which is exactly backwards: it only showed up as a live problem on literally the first day
+    // of a season, before any other game anywhere had pushed the league day forward past his own.
+    if(tiredDaysNeeded===0) return false;
     return daysSince <= tiredDaysNeeded;
   }
   if(!SEASON.pitcherRest) return false;
