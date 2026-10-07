@@ -5350,6 +5350,477 @@ function performCatcherShiftLoseDH(gs, teamKey, outgoingSlotIdx, shiftingSlotIdx
   return replacement;
 }
 
+// Shared by every contested-throw decision below: the offense's estimated chance of winning a
+// standard "offValue >= defValue + roll(1-20)" contest — the exact same formula every one of these
+// plays actually resolves with, so this is a genuine odds estimate, never a separate guess.
+function cpuEstimateContestOdds(offValue, defValue){
+  return Math.max(0, Math.min(1, (offValue-defValue)/20));
+}
+/* ---------------- CPU STRATEGY (non-human-controlled teams only) ----------------
+   Applies only when isHumanControls(fk) is false and the team isn't the other real
+   player in an online game (isOnlineOpponentTeam) — a genuine CPU opponent, or any
+   team (including the user's own) for whatever stretch is currently being simmed.
+   Every decision here is a weighted coin flip against a situational probability,
+   not a hard threshold — the goal is a plausible manager's "feel," not a formula
+   that produces the textbook-optimal call every single time. */
+// Generic weighted roll shared by every CPU decision below.
+function cpuWeightedDecision(probability){
+  return Math.random() < Math.max(0, Math.min(1, probability));
+}
+// How likely a CPU manager is to go to the bullpen for the current pitcher, right now, today.
+// Built from the same signals the game already tracks for a human manager's own "is he tired"
+// question — in-game fatigue (rulebook 3.4, works in every mode) and performance this outing — plus
+// situational leverage and, in season/league play specifically, a real incentive not to empty the
+// bullpen over nothing just because a single-game manager would have no reason to hold back.
+function cpuComputePullProbability(gs, fk){
+  const pIdx = gs.pitcherIdx[fk];
+  const pit = TEAMS[fk].pitchers[pIdx];
+  const line = gs.pitStats[fk][pit.name] || {};
+  const ownOuts = line.outs || 0;
+  const effLimit = effectivePitcherIPLimit(pit, line);
+  const outsPastLimit = ownOuts - effLimit*3;
+  let p = 0.05; // baseline: even a manager happy with his pitcher occasionally just makes a move
+
+  // In-game fatigue (3.4): already incorporates season-level rest debt as a floor, so this alone
+  // covers both "pitched deep today" and "didn't get enough rest between appearances" without
+  // double-counting a separate season-tiredness bonus on top.
+  if(outsPastLimit >= 0){
+    p += 0.55 + Math.min(0.35, 0.12 * (outsPastLimit/3)); // climbs each inning further past the limit
+  }
+
+  // Performance this specific outing — getting hit hard is its own reason to go to the pen even
+  // before he's technically "tired" by the rulebook's own definition.
+  const er = line.ER || 0;
+  p += Math.min(0.25, er*0.05);
+
+  // Leverage: late and close raises urgency for a better matchup; a lopsided score lowers it either
+  // way (no reason to rush a change in a blowout, win or lose).
+  const scoreDiff = Math.abs(gs.score[fk] - gs.score[fk==='home'?'away':'home']);
+  if(gs.inning>=7 && scoreDiff<=3) p += 0.15;
+  else if(scoreDiff>=8) p -= 0.1;
+
+  // Bullpen conservation — only meaningful across a season/league, where today's relievers are also
+  // needed tomorrow. A single game (or the postseason, where there genuinely is no tomorrow to save
+  // arms for) has no reason to hold back once there's already some real cause to make a change.
+  const isSingleGameContext = !(typeof SEASON!=='undefined' && SEASON && SEASON.statsScope && PLAYOFF_MATCH_REF===null);
+  if(!isSingleGameContext && outsPastLimit<0 && er===0 && !(gs.inning>=7 && scoreDiff<=3)){
+    p *= 0.4; // no real reason yet — don't burn a reliever on a pitcher who's doing fine
+  }
+  return p;
+}
+// Picks who comes in once the pull decision is already made. A real save situation (same shape as
+// startPitcherStint's own enteredSaveSituation check, computed here independently since the swap
+// hasn't happened yet) calls for the team's best-available arm almost regardless of his own rest
+// status — that's what a closer role means. Otherwise, prefer whoever's actually rested, and among
+// rested options lean toward the better arm for the moment rather than just whoever's next in line.
+function cpuSelectReliever(gs, fk){
+  const tk = fk==='home' ? 'away' : 'home';
+  const availIdx = TEAMS[fk].pitchers
+    .map((p,i)=>i)
+    .filter(i=>i!==gs.pitcherIdx[fk] && !gs.pitcherRemoved[fk].has(i));
+  if(!availIdx.length) return -1;
+  const runnersOnBase = [0,1,2].filter(i=>!!gs.bases[i]).length;
+  const enteredLead = gs.score[fk]-gs.score[tk];
+  const saveSituation = enteredLead>0 && (enteredLead<=3 || enteredLead<=runnersOnBase+2) && gs.inning>=8;
+  const rested = availIdx.filter(i=>!isSeasonPitcherTired(fk, TEAMS[fk].pitchers[i]));
+  const pool = saveSituation ? availIdx : (rested.length ? rested : availIdx);
+  return pool.reduce((best,i)=>{
+    if(best<0) return i;
+    return (TEAMS[fk].pitchers[i].points||0) > (TEAMS[fk].pitchers[best].points||0) ? i : best;
+  }, -1);
+}
+// The batter due up right after the current one — used for the intentional-walk decision (is the
+// current guy meaningfully more dangerous than whoever's on deck, i.e. is pitching around him to
+// face an easier hitter actually worth it).
+function onDeckBatter(gs){
+  const tk = battingTeamKey(gs);
+  const l = TEAMS[tk].lineup;
+  return l[(gs.lineupIdx[tk]+1) % l.length];
+}
+// Intentional walk only ever makes baseball sense with 1st base open (otherwise it's just loading
+// the bases, or forcing in a run with the bases already loaded) and at least one runner already in
+// scoring position to set up a force — never offered/considered otherwise. Scales with how much more
+// dangerous the current batter is than whoever's on deck, and with leverage.
+function cpuComputeIBBProbability(gs){
+  if(gs.bases[0]) return 0;
+  if(!gs.bases[1] && !gs.bases[2]) return 0;
+  const batter = currentBatter(gs), onDeck = onDeckBatter(gs);
+  const dangerGap = (batter.points||0) - (onDeck.points||0);
+  if(dangerGap < 30) return 0; // not meaningfully tougher than the next guy -- no reason to pitch around him
+  let p = 0.1 + Math.min(0.4, dangerGap/300);
+  const fk = fieldingTeamKey(gs), tk = fk==='home'?'away':'home';
+  const margin = Math.abs(gs.score[fk]-gs.score[tk]);
+  if(gs.inning>=7 && margin<=2) p += 0.2; // high-leverage spot makes pitching around him more worthwhile
+  return p;
+}
+// How much a defense wants to trade "no hit gets through cleanly" risk for "cut the run off at the
+// plate" reward — only ever reachable with a runner on 3rd and under 2 outs in the first place. Scales
+// with how much that one run actually matters: trailing or tied makes it the tying/go-ahead run, and
+// later innings leave less time to make up for conceding it.
+function cpuComputeInfieldInProbability(gs){
+  const fk = fieldingTeamKey(gs), tk = fk==='home'?'away':'home';
+  const margin = gs.score[fk] - gs.score[tk]; // positive = defense currently leading
+  let p = 0.15;
+  if(margin<=0) p += 0.35;
+  else if(margin===1) p += 0.2;
+  if(gs.inning>=7) p += 0.25;
+  else if(gs.inning>=5) p += 0.1;
+  return p;
+}
+// Finds the single best available defensive upgrade on the bench, if any — compares every current
+// fielder's rating at their own position (fielderBonus already handles an out-of-position penalty
+// correctly if that fielder isn't actually rated there) against every bench player who IS genuinely
+// eligible for that same position (never an emergency/out-of-position bench call for this purpose —
+// the whole point is a clean upgrade, not trading one problem for another). Returns the biggest gain
+// found, or null if nothing clears the minimum bar to be worth a roster move at all.
+function cpuFindBestDefensiveSub(gs){
+  const fk = fieldingTeamKey(gs);
+  const team = TEAMS[fk];
+  let best = null;
+  team.lineup.forEach((p, slotIdx)=>{
+    if(p.pos==='DH') return; // no fielding position to upgrade
+    const currentRating = fielderBonus(fk, p.pos);
+    team.bench.forEach((b, benchIdx)=>{
+      if(!eligibleFor(b, p.pos)) return;
+      const benchRating = (b.fielding && b.fielding[p.pos]!==undefined) ? b.fielding[p.pos] : 0;
+      const gain = benchRating - currentRating;
+      if(gain>=3 && (!best || gain>best.fieldingGain)){
+        best = { slotIdx, benchIdx, fieldingGain:gain, outgoingName:p.name, incomingName:b.name };
+      }
+    });
+  });
+  return best;
+}
+// Only worth considering late, and only while actually protecting a lead — defense doesn't help a
+// team that needs to score, so this never fires tied or trailing. Scales with how big the actual
+// upgrade is, with extra urgency once the game is down to its final frame.
+function cpuComputeDefensiveSubProbability(gs, fieldingGain){
+  const fk = fieldingTeamKey(gs), tk = fk==='home'?'away':'home';
+  const margin = gs.score[fk]-gs.score[tk];
+  if(gs.inning<7 || margin<=0) return 0;
+  let p = 0.1 + Math.min(0.5, fieldingGain*0.08);
+  if(gs.inning>=9) p += 0.15;
+  return p;
+}
+// Orchestrates the defense-choice decision for a CPU-controlled side. Order: pitching change first
+// (same as a human manager deciding who's on the mound before fine-tuning anything else), then a
+// defensive sub (a separate "who's on the field" question that can stack with a pitching change —
+// confirmed a real pitching change returns to this same decision point, so a human could do both in
+// sequence; the CPU does the same in one pass here), then intentional walk — which, if taken, resolves
+// the plate appearance outright and makes infield positioning moot — then infield in.
+function cpuDecideDefenseChoice(gs){
+  const fk = fieldingTeamKey(gs);
+  if(pitchingChangeAllowed(gs) && canRemovePitcher(gs)){
+    const availPitchers = TEAMS[fk].pitchers.filter((p,i)=>i!==gs.pitcherIdx[fk] && !gs.pitcherRemoved[fk].has(i));
+    if(availPitchers.length>0 && cpuWeightedDecision(cpuComputePullProbability(gs, fk))){
+      const newIdx = cpuSelectReliever(gs, fk);
+      if(newIdx>=0){ performPitchingChange(gs, fk, newIdx); }
+    }
+  }
+  if(subsAllowed(gs) && TEAMS[fk].bench.length>0){
+    const candidate = cpuFindBestDefensiveSub(gs);
+    if(candidate && cpuWeightedDecision(cpuComputeDefensiveSubProbability(gs, candidate.fieldingGain))){
+      performBatterSub(gs, fk, candidate.slotIdx, candidate.benchIdx, 'in on defense');
+    }
+  }
+  if(cpuWeightedDecision(cpuComputeIBBProbability(gs))){
+    applyIntentionalWalk(gs);
+    afterPlateAppearance();
+    return;
+  }
+  if(!!gs.bases[2] && gs.outs<2 && cpuWeightedDecision(cpuComputeInfieldInProbability(gs))){
+    gs.infieldIn = true;
+    logEntry(gs, `${TEAMS[fk].nick} play the infield in.`);
+  }
+  gs.stage = 'offense-choice';
+}
+// How likely a CPU offense is to send a runner on a straight steal attempt (2nd or 3rd), estimated
+// from the exact same roll formula initiateSteal itself uses (success iff roll <= speed - catcherDef)
+// — so this is a genuine odds estimate, not a guess layered on top of a separate mechanic. Real
+// managers want real margin before sending a runner, not just technically-better-than-even odds.
+function cpuComputeStealAttemptProbability(gs, base){
+  const fk = fieldingTeamKey(gs), tk = battingTeamKey(gs);
+  const runnerIdx = base===2?0:1;
+  const runnerName = gs.bases[runnerIdx];
+  const bonus = base===3?5:0;
+  const defValue = fielderBonus(fk,'C')+bonus;
+  const offValue = runnerSpeed(tk, runnerName);
+  const estSuccess = Math.max(0, Math.min(1, (offValue-defValue)/20));
+  let p = 0.03;
+  if(estSuccess>0.55) p += (estSuccess-0.55)*1.2;
+  if(gs.outs===2) p += 0.08; // little left to lose late in the inning
+  else if(gs.outs===0) p -= 0.03; // more cautious about erasing a fresh leadoff runner
+  const margin = gs.score[tk]-gs.score[fk];
+  if(gs.inning>=7 && margin<=0) p += 0.08; // manufacturing a run matters more trailing or tied, late
+  return Math.max(0, p);
+}
+// Both runners go at once and the defense can only throw to one base, so the downside of a double
+// steal is more contained than either runner going alone — averages the two individual odds estimates
+// and adds a small bonus for that guaranteed-one-safe shape.
+function cpuComputeDoubleStealProbability(gs){
+  const p2 = cpuComputeStealAttemptProbability(gs, 2);
+  const p3Runner = gs.bases[1]; // the lead runner's own steal-3rd-equivalent odds, computed the same way base=3 would
+  const fk = fieldingTeamKey(gs), tk = battingTeamKey(gs);
+  const defValue = fielderBonus(fk,'C')+5;
+  const offValue = runnerSpeed(tk, p3Runner);
+  const estSuccess3 = Math.max(0, Math.min(1, (offValue-defValue)/20));
+  const avg = (Math.max(0,Math.min(1,(runnerSpeed(tk,gs.bases[0])-fielderBonus(fk,'C'))/20)) + estSuccess3) / 2;
+  let p = p2;
+  if(avg>0.5) p += 0.05;
+  return p;
+}
+// Runner on 3rd, under 2 outs (same gating as the squeeze button itself). Classic use case is a
+// weaker hitter who isn't likely to drive the run in on his own anyway, in a spot where that one run
+// carries real weight.
+function cpuComputeSqueezeProbability(gs){
+  const batter = currentBatter(gs);
+  let p = 0.03;
+  if((batter.points||0) < 200) p += 0.1;
+  const fk = fieldingTeamKey(gs), tk = battingTeamKey(gs);
+  const margin = gs.score[tk]-gs.score[fk];
+  if(gs.inning>=7 && Math.abs(margin)<=1) p += 0.15;
+  return p;
+}
+// Runner on 1st only. A faster runner gets more out of the shape of a hit-and-run (he's already the
+// type of runner who'd be stealing anyway), and it's most useful with outs to spare, since avoiding a
+// double play is the main point.
+function cpuComputeHitAndRunProbability(gs){
+  const tk = battingTeamKey(gs);
+  const speed = runnerSpeed(tk, gs.bases[0]);
+  let p = 0.03;
+  if(speed>=15) p += 0.08;
+  if(gs.outs<2) p += 0.05;
+  return p;
+}
+// Sac bunt is really only a 0-out tactic (giving up an out to move a runner with outs already gone
+// against you is rarely worth it) — a weak hitter at the plate who isn't likely to do much more with
+// the at-bat anyway makes it more attractive, same as a squeeze.
+function cpuComputeSacBuntProbability(gs){
+  if(gs.outs>0) return 0;
+  const batter = currentBatter(gs);
+  let p = 0.05;
+  if((batter.points||0) < 180) p += 0.15;
+  const fk = fieldingTeamKey(gs), tk = battingTeamKey(gs);
+  const margin = gs.score[tk]-gs.score[fk];
+  if(gs.inning>=6 && Math.abs(margin)<=2) p += 0.1;
+  return p;
+}
+// Orchestrates every proactive offense-initiated decision for a CPU-controlled side — mirrors the
+// exact same gating renderDecisionFlow uses to decide which buttons a human would even see, then rolls
+// each eligible option in priority order, taking the first one that fires. Steal attempts and the
+// squeeze come before hit-and-run and the sac bunt since they're the more opportunistic, situational
+// calls; a double steal takes priority over a lone steal of 2nd when both are available, since sending
+// both runners is strictly better value for the same bases. Bypasses every human-facing confirmation
+// popup (ROLL_CONFIRM_POPUP, CONFIRM_STATE) and goes straight to the same state transition each one's
+// own onConfirm would have performed.
+function cpuDecideOffenseChoice(gs){
+  const tk = battingTeamKey(gs);
+  const runnerOnBase = gs.bases.some(x=>x);
+  const canSteal2 = !!gs.bases[0] && !gs.bases[1] && !isPositionPlayerPitching(gs) && !runnerAtBaseIsPitcher(gs,tk,0);
+  const canSteal3 = !!gs.bases[1] && !gs.bases[2] && !isPositionPlayerPitching(gs) && !runnerAtBaseIsPitcher(gs,tk,1);
+  const canDoubleSteal12 = !!gs.bases[0] && !!gs.bases[1] && !gs.bases[2] && !isPositionPlayerPitching(gs) && !runnerAtBaseIsPitcher(gs,tk,0) && !runnerAtBaseIsPitcher(gs,tk,1);
+  const canSqueeze = !!gs.bases[2] && gs.outs<2;
+  const canHitAndRun = !!gs.bases[0] && !gs.bases[1] && !isPositionPlayerPitching(gs) && !runnerAtBaseIsPitcher(gs,tk,0);
+
+  if(canDoubleSteal12 && cpuWeightedDecision(cpuComputeDoubleStealProbability(gs))){
+    gs.stage='doublesteal12-defense-choice'; render(); return;
+  }
+  if(canSteal2 && cpuWeightedDecision(cpuComputeStealAttemptProbability(gs, 2))){
+    if(gs.bases[2]){ gs.stage='steal13-defense-choice'; render(); return; } // richer steal-with-3rd-also-on decision tree
+    gs.pendingSteal={base:2}; gs.stage='steal-defense-throw'; render(); return;
+  }
+  if(canSteal3 && cpuWeightedDecision(cpuComputeStealAttemptProbability(gs, 3))){
+    gs.pendingSteal={base:3}; gs.stage='steal-defense-throw'; render(); return;
+  }
+  if(canSqueeze && cpuWeightedDecision(cpuComputeSqueezeProbability(gs))){
+    initiateSqueeze(); return;
+  }
+  if(canHitAndRun && cpuWeightedDecision(cpuComputeHitAndRunProbability(gs))){
+    initiateHitAndRun(); return;
+  }
+  if(runnerOnBase && gs.outs<2 && cpuWeightedDecision(cpuComputeSacBuntProbability(gs))){
+    initiateBunt(); return;
+  }
+  doThrowPitch();
+}
+/* ---- Contested-throw family: send/hold, concede/contest, and which-base-to-throw decisions ---- */
+// Tag-up send: scoring (toBase==='home') is worth meaningfully more risk than just taking an extra
+// base, so it gets a lower odds threshold before it's attractive. Outs==2 means there's nothing extra
+// to lose this at-bat either way.
+function cpuComputeTagUpSendProbability(fk, tk, cand, outs){
+  const {defValue, offValue} = tagUpBonusAndDefense(fk, tk, cand);
+  const estSuccess = cpuEstimateContestOdds(offValue, defValue);
+  const threshold = cand.toBase==='home' ? 0.45 : 0.55;
+  let p = 0.05;
+  if(estSuccess>threshold) p += (estSuccess-threshold)*1.3;
+  if(outs===2) p += 0.1;
+  return p;
+}
+// Extra-base send: same shape as tag-up, using the hit's own bonus structure (trying-for-home and
+// 2-outs bonuses already baked into offValue by the caller).
+function cpuComputeExtraBaseSendProbability(offValue, defValue, toBase, outs){
+  const estSuccess = cpuEstimateContestOdds(offValue, defValue);
+  const threshold = toBase==='home' ? 0.45 : 0.55;
+  let p = 0.05;
+  if(estSuccess>threshold) p += (estSuccess-threshold)*1.3;
+  if(outs===2) p += 0.1;
+  return p;
+}
+// GB-unforced (runner on 2nd, 1st open): offense decides whether to send him for 3rd at all. The real
+// risk here is a DOUBLE-PLAY-shaped result if caught (the batter's own groundout plus the runner, two
+// outs total) rather than just losing ground — holding is always a safe, zero-risk option — so this
+// leans more conservative than a typical send decision.
+function cpuComputeGbUnforcedSendProbability(gs){
+  const fk = fieldingTeamKey(gs), tk = battingTeamKey(gs);
+  const runnerName = gs.bases[1];
+  const estSuccess = cpuEstimateContestOdds(runnerSpeed(tk, runnerName), infieldRating(fk));
+  let p = 0.08;
+  if(estSuccess>0.55) p += (estSuccess-0.55)*1.1;
+  return p;
+}
+// GB-unforced, defense's side (only reached if offense sent): conceding is completely free (guaranteed
+// 1 out, runner to 3rd, no roll) — throwing risks a TRUE fielder's choice with zero outs at all if it
+// misses, in exchange for a shot at two outs. Only worth it with real confidence.
+function cpuComputeGbUnforcedThrowProbability(gs){
+  const fk = fieldingTeamKey(gs), tk = battingTeamKey(gs);
+  const runnerName = gs.bases[1];
+  const defOutChance = cpuEstimateContestOdds(infieldRating(fk), runnerSpeed(tk, runnerName)-0); // defense's own odds, mirrored
+  const outChance = Math.max(0, Math.min(1, (infieldRating(fk)-runnerSpeed(tk,runnerName)+20)/20));
+  let p = 0.25;
+  if(outChance>0.6) p += (outChance-0.6)*1.4;
+  return p;
+}
+// Infield-in GB, runner on 3rd sent home: holding is a guaranteed, safe out with the runner intact at
+// 3rd for another chance — sending risks a double-play-shaped result (batter's groundout plus the
+// runner caught at the plate) in exchange for the run. Scoring is valuable enough to accept real risk
+// for, and outs==2 means this is the last shot at the run from this at-bat regardless.
+function cpuComputeInfieldInGbSendProbability(gs){
+  const fk = fieldingTeamKey(gs), tk = battingTeamKey(gs);
+  const runnerName = gs.bases[2];
+  const estSuccess = cpuEstimateContestOdds(runnerSpeed(tk, runnerName)+3, infieldRating(fk));
+  let p = 0.15;
+  if(estSuccess>0.4) p += (estSuccess-0.4)*1.1;
+  if(gs.outs===2) p += 0.1;
+  return p;
+}
+// Double play vs. the guaranteed force at 3rd: real managers go for the standard double play the
+// clear majority of the time (it's the standard, expected play), but a fast batter against a weak
+// infield makes the safer guaranteed-out alternative genuinely more attractive — failing the DP
+// attempt leaves a runner on 3rd instead of just 2nd, a strictly worse result than taking the force.
+function cpuComputeGoForDPProbability(gs){
+  const fk = fieldingTeamKey(gs);
+  const batter = GS.lastResolved ? GS.lastResolved.batter : currentBatter(gs);
+  const defValue = infieldRating(fk);
+  const offValue = (batter.speed||0)+3;
+  const turnTwoChance = Math.max(0, Math.min(1, (defValue-offValue+20)/20));
+  let p = 0.75;
+  if(turnTwoChance<0.4) p -= (0.4-turnTwoChance)*1.0;
+  return Math.max(0.15, Math.min(0.95, p));
+}
+// Steal-13 (runner on 1st breaking with a runner also on 3rd): should the defense even throw down to
+// 2nd, or let it go uncontested? Throwing down is still the standard play most of the time, but a fast
+// runner already on 3rd raises the stakes of opening up a throwing lane for him, and a defense with a
+// strong shot at nabbing the lead runner at 2nd is more inclined to take it regardless.
+function cpuComputeThrowDownSteal13Probability(gs){
+  const fk = fieldingTeamKey(gs), tk = battingTeamKey(gs);
+  const runnerName = gs.bases[0], thirdRunnerName = gs.bases[2];
+  const estSuccess = cpuEstimateContestOdds(runnerSpeed(tk, runnerName), fielderBonus(fk,'C'));
+  const thirdSpeed = runnerSpeed(tk, thirdRunnerName);
+  let p = 0.6;
+  if(estSuccess<0.4) p += (0.4-estSuccess)*0.8;
+  if(thirdSpeed>=16) p -= 0.15;
+  return Math.max(0.1, Math.min(0.9, p));
+}
+// Steal-13, offense's follow-up (only reached if the defense did throw down): send the trail runner
+// from 3rd too? Same send-probability shape as any other contested advance, using the situational
+// speed penalty (steeper under 2 outs, lighter at exactly 2) the actual play itself applies.
+function cpuComputeSendThirdOnSteal13Probability(gs){
+  const fk = fieldingTeamKey(gs), tk = battingTeamKey(gs);
+  const thirdRunnerName = gs.bases[2];
+  const penalty = gs.outs<2 ? 5 : 3;
+  const estSuccess = cpuEstimateContestOdds(runnerSpeed(tk, thirdRunnerName)-penalty, infieldRating(fk));
+  let p = 0.1;
+  if(estSuccess>0.4) p += (estSuccess-0.4)*1.2;
+  if(gs.outs===2) p += 0.1;
+  return p;
+}
+// Double steal (1st and 2nd both break): the defense gets exactly one throw and must choose which
+// runner to contest — not a weighted roll like the others, just picking whichever target is actually
+// the better play. Retiring the lead runner (heading to 3rd) is generally worth more than the trailer,
+// so his odds get a modest weight bump when comparing the two options directly.
+function cpuComputeDoubleStealTarget(gs){
+  const fk = fieldingTeamKey(gs), tk = battingTeamKey(gs);
+  const runnerTo2nd = gs.bases[0], runnerTo3rd = gs.bases[1];
+  const outChance2 = Math.max(0, Math.min(1, (fielderBonus(fk,'C')-runnerSpeed(tk,runnerTo2nd)+20)/20));
+  const outChance3 = Math.max(0, Math.min(1, (fielderBonus(fk,'C')+5-runnerSpeed(tk,runnerTo3rd)+20)/20));
+  return (outChance3*1.15 >= outChance2) ? 3 : 2;
+}
+// When two runners tag/advance simultaneously, the defense only gets one throw — picks whichever
+// target has the best expected value, not just whoever's closest to scoring. Weighs each candidate's
+// actual odds of being put out against how much that out is worth (preventing a run outweighs just
+// preventing an extra base), rather than always defaulting to the runner heading home regardless of
+// how unlikely that throw actually is to succeed.
+function cpuPickTagUpThrowTarget(fk, tk, sentList){
+  let best = null, bestScore = -1;
+  sentList.forEach(cand=>{
+    const {defValue, offValue} = tagUpBonusAndDefense(fk, tk, cand);
+    const outChance = Math.max(0, Math.min(1, (defValue-offValue+20)/20));
+    const value = cand.toBase==='home' ? 1.3 : 1.0;
+    const score = outChance*value;
+    if(score>bestScore){ bestScore=score; best=cand; }
+  });
+  return best;
+}
+function cpuPickExtraBaseThrowTarget(fk, tk, sentList, outs){
+  let best = null, bestScore = -1;
+  sentList.forEach(cand=>{
+    const bonus = (cand.toBase==='home' ? 3 : 0) + (outs===2 ? 3 : 0);
+    const offValue = runnerSpeed(tk, cand.runnerName) + bonus;
+    const defValue = outfieldRating(fk);
+    const outChance = Math.max(0, Math.min(1, (defValue-offValue+20)/20));
+    const value = cand.toBase==='home' ? 1.3 : 1.0;
+    const score = outChance*value;
+    if(score>bestScore){ bestScore=score; best=cand; }
+  });
+  return best;
+}
+// After two missed bunt attempts, a third miss is an outright strikeout — taking the normal pitch
+// instead comes with a real +2 On-Base bonus as compensation, making it the generally safer play.
+// Only worth the strikeout risk when the bunt is still genuinely valuable: a weak hitter who wouldn't
+// gain much from swinging away anyway, or a real late/close situation where the advance still matters.
+function cpuComputeTryThirdBuntProbability(gs){
+  const batter = currentBatter(gs);
+  let p = 0.2;
+  if((batter.points||0) < 180) p += 0.15;
+  const fk = fieldingTeamKey(gs), tk = battingTeamKey(gs);
+  const margin = gs.score[tk]-gs.score[fk];
+  if(gs.inning>=6 && Math.abs(margin)<=2) p += 0.1;
+  return p;
+}
+// Hit-and-run fly ball: runner from 1st is already going — also send a runner on 3rd to tag at the
+// same time? Same send-probability shape as the other "also send the trailer" decisions.
+function cpuComputeSendThirdOnHitRunFBProbability(gs){
+  const fk = fieldingTeamKey(gs), tk = battingTeamKey(gs);
+  const thirdRunnerName = gs.bases[2];
+  const {defValue, offValue} = tagUpBonusAndDefense(fk, tk, {toBase:'home', runnerName:thirdRunnerName});
+  const estSuccess = cpuEstimateContestOdds(offValue, defValue);
+  let p = 0.1;
+  if(estSuccess>0.45) p += (estSuccess-0.45)*1.2;
+  return p;
+}
+// Squeeze, defense's side: conceding is a clean, guaranteed outcome (the run scores, but so does a
+// real out on the batter). Throwing home risks a STRICTLY WORSE result if it misses — the same run
+// scores, but now the batter reaches safely too, with no out at all — so this only makes sense with
+// real confidence in winning the throw.
+function cpuComputeSqueezeThrowHomeProbability(gs){
+  const fk = fieldingTeamKey(gs), tk = battingTeamKey(gs);
+  const runnerName = gs.bases[2];
+  const bonus = gs.squeezeInfieldIn ? 0 : 5;
+  const outChance = Math.max(0, Math.min(1, (infieldRating(fk)-(runnerSpeed(tk,runnerName)+bonus)+20)/20));
+  let p = 0.15;
+  if(outChance>0.5) p += (outChance-0.5)*1.4;
+  return p;
+}
 function performPitchingChange(gs, teamKey, newIdx){
   // Backstop for the 3-batter-minimum rule — the UI already hides/disables this action when it's
   // not allowed, but this guard keeps the function itself safe for any future caller (e.g. CPU logic).
@@ -5928,12 +6399,12 @@ function simStep(){
   if(!GS || GS.gameOver) return false;
   if(GS.handoff){ GS.handoff=false; return true; }
   switch(GS.stage){
-    case 'defense-choice': GS.stage='offense-choice'; return true;
-    case 'offense-choice': doThrowPitch(); return true;
+    case 'defense-choice': cpuDecideDefenseChoice(GS); return true;
+    case 'offense-choice': cpuDecideOffenseChoice(GS); return true;
     case 'pitch-thrown': doRollSwing(); return true;
     case 'swing-rolled':
-      if(GS.pendingClass==='dp'){ initiateDP(); }
-      else if(GS.pendingClass==='dp-or-force3'){ initiateDP(); } // sim default: standard double play [SIMPLIFIED]
+      if(GS.pendingClass==='dp'){ if(cpuWeightedDecision(cpuComputeGoForDPProbability(GS))){ initiateDP(); } else { resolveForceOutOnly(); } }
+      else if(GS.pendingClass==='dp-or-force3'){ if(cpuWeightedDecision(cpuComputeGoForDPProbability(GS))){ initiateDP(); } else { initiateForceAt3rd(); } }
       else if(GS.pendingClass==='gb-unforced-2nd'){ GS.stage='gb-unforced-choice'; }
       else if(GS.pendingClass==='infieldin-gb-loaded'){ initiateInfieldInGBLoaded(); }
       else if(GS.pendingClass==='infieldin-gb-choice'){ GS.stage='infieldin-gb-choice'; }
@@ -5941,29 +6412,49 @@ function simStep(){
       else if(GS.pendingClass==='extrabase'){ GS.stage='extrabase-choice'; advanceExtraBaseToAskableStep(); }
       else { afterPlateAppearance(); }
       return true;
-    case 'gb-unforced-choice': GS.stage='gb-unforced-defense-choice'; return true; // sim default: always send [SIMPLIFIED]
+    case 'gb-unforced-choice':
+      if(cpuWeightedDecision(cpuComputeGbUnforcedSendProbability(GS))){ GS.stage='gb-unforced-defense-choice'; }
+      else { resolveGbUnforcedHold(); }
+      return true;
     case 'steal-defense-throw': { const base=GS.pendingSteal.base; GS.pendingSteal=null; initiateSteal(base); return true; }
-    case 'gb-unforced-defense-choice': resolveGbUnforcedConcede(); return true; // sim default: always take the sure out [SIMPLIFIED]
+    case 'gb-unforced-defense-choice':
+      if(cpuWeightedDecision(cpuComputeGbUnforcedThrowProbability(GS))){ resolveGbUnforcedThrow(); }
+      else { resolveGbUnforcedConcede(); }
+      return true;
     case 'gb-unforced-result': GS.contestResult=null; afterPlateAppearance(); return true;
-    case 'tagup-choice': answerTagUpStep(true); return true;
+    case 'tagup-choice': {
+      const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
+      const cand = GS.tagUp.candidates[GS.tagUp.step];
+      answerTagUpStep(cpuWeightedDecision(cpuComputeTagUpSendProbability(fk, tk, cand, GS.outs)));
+      return true;
+    }
     case 'tagup-defense-throw': {
       const c = GS.pendingTagUpThrow; GS.pendingTagUpThrow=null;
       resolveContestedTagUp(c.contested, c.autoSafeOthers);
       return true;
     }
     case 'tagup-defense-pick': {
+      const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
       const tu = GS.tagUp;
       const sentList = tu.candidates.filter((c,i)=>tu.sent[i]);
-      const contested = sentList.find(c=>c.toBase==='home') || sentList[0];
+      const contested = cpuPickTagUpThrowTarget(fk, tk, sentList);
       const others = sentList.filter(c=>c!==contested);
       resolveContestedTagUp(contested, others);
       return true;
     }
     case 'tagup-result': GS.contestResult=null; afterPlateAppearance(); return true;
     case 'tagup-timeplay-result': { const onAdvance = GS.contestResult.onAdvance; GS.contestResult=null; (onAdvance||afterPlateAppearance)(); return true; }
-    case 'infieldin-gb-choice': initiateInfieldInGB(true); return true; // sim default: always send [SIMPLIFIED]
+    case 'infieldin-gb-choice': initiateInfieldInGB(cpuWeightedDecision(cpuComputeInfieldInGbSendProbability(GS))); return true;
     case 'infieldin-gb-result': GS.contestResult=null; afterPlateAppearance(); return true;
-    case 'extrabase-choice': answerExtraBaseStep(true); return true;
+    case 'extrabase-choice': {
+      const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
+      const cand = GS.extraBase.candidates[GS.extraBase.step];
+      const bonus = (cand.toBase==='home' ? 3 : 0) + (GS.outs===2 ? 3 : 0);
+      const offValue = runnerSpeed(tk, cand.runnerName) + bonus;
+      const defValue = outfieldRating(fk);
+      answerExtraBaseStep(cpuWeightedDecision(cpuComputeExtraBaseSendProbability(offValue, defValue, cand.toBase, GS.outs)));
+      return true;
+    }
     case 'extrabase-defense-throw': {
       // Now reached during every sim burst with exactly one runner sent, since resolveExtraBaseDecisions
       // always hands off to this stage regardless of who's controlling the defense (the render function
@@ -5973,12 +6464,10 @@ function simStep(){
       return true;
     }
     case 'extrabase-defense-pick': {
-      // Now reached during every sim burst with two runners sent, since resolveExtraBaseDecisions
-      // always hands off to this stage regardless of who's controlling the defense — mirrors the same
-      // "protect the plate first" heuristic the render function itself uses for a genuine CPU.
+      const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
       const eb = GS.extraBase;
       const sentList = eb.candidates.filter((c,i)=>eb.sent[i]);
-      const contested = sentList.find(c=>c.toBase==='home') || sentList[0];
+      const contested = cpuPickExtraBaseThrowTarget(fk, tk, sentList, GS.outs);
       const other = sentList.find(c=>c!==contested);
       resolveContestedExtraBase(contested, other);
       return true;
@@ -5988,20 +6477,41 @@ function simStep(){
     case 'dp-preroll': initiateDP(); return true; // defensive fallback if a sim is started while paused here — swing-rolled already resolves this directly during a sim burst
     case 'dp-result': GS.contestResult=null; afterPlateAppearance(); return true;
     case 'steal-result': GS.contestResult=null; afterPlateAppearance(); return true;
-    case 'steal13-defense-choice': GS.stage='steal13-send-home-choice'; return true; // sim default: always throw down
-    case 'steal13-send-home-choice': GS.pendingSteal13=null; initiateSteal13(); return true; // sim default: never send the trail runner
+    case 'steal13-defense-choice': {
+      if(cpuWeightedDecision(cpuComputeThrowDownSteal13Probability(GS))){ GS.stage='steal13-send-home-choice'; }
+      else {
+        const runnerName = GS.bases[0], thirdRunnerName = GS.bases[2];
+        const bases = GS.bases.slice(); bases[0]=null; bases[1]=runnerName;
+        GS.bases = bases;
+        logEntry(GS, `${runnerName} takes 2nd uncontested \u2014 ${thirdRunnerName} holds at 3rd.`);
+        afterPlateAppearance();
+      }
+      return true;
+    }
+    case 'steal13-send-home-choice': {
+      const penalty = GS.outs<2 ? 5 : 3;
+      GS.pendingSteal13 = cpuWeightedDecision(cpuComputeSendThirdOnSteal13Probability(GS)) ? {penalty} : null;
+      initiateSteal13();
+      return true;
+    }
     case 'steal13-home-result': { const cb=GS.contestResult.onAdvance; GS.contestResult=null; (cb||afterPlateAppearance)(); return true; }
-    case 'doublesteal12-defense-choice': initiateDoubleSteal12(3); return true; // sim default: always throw for the lead runner
+    case 'doublesteal12-defense-choice': initiateDoubleSteal12(cpuComputeDoubleStealTarget(GS)); return true;
     case 'doublesteal12-result': GS.contestResult=null; afterPlateAppearance(); return true;
     case 'bunt-attempt1-missed': GS.contestResult=null; runBuntAttempt(); return true;
-    case 'bunt-choice': GS.pitchBonus=2; GS.contestResult=null; doThrowPitch(); return true;
+    case 'bunt-choice':
+      if(cpuWeightedDecision(cpuComputeTryThirdBuntProbability(GS))){ runBuntAttempt(); }
+      else { GS.pitchBonus=2; GS.contestResult=null; doThrowPitch(); }
+      return true;
     case 'bunt-result': GS.contestResult=null; afterPlateAppearance(); return true;
     case 'squeeze-foul-choice': GS.contestResult=null; resolveSqueezeTakeAtBat('Sim: offense takes the at-bat after the foul (\u22122 On-Base).'); return true;
-    case 'hitrun-fb-send3rd-choice': GS.hitRunFB.sendThird=false; beginHitRunFBThrow(); return true;
+    case 'hitrun-fb-send3rd-choice': GS.hitRunFB.sendThird=cpuWeightedDecision(cpuComputeSendThirdOnHitRunFBProbability(GS)); beginHitRunFBThrow(); return true;
     case 'hitrun-fb-defense-throw': resolveHitRunFBContest(GS.hitRunFB.candidates[0], []); return true;
     case 'hitrun-fb-defense-pick': { const c=GS.hitRunFB.candidates; resolveHitRunFBContest(c[0], c.slice(1)); return true; }
     case 'hitrun-fb-result': GS.contestResult=null; afterPlateAppearance(); return true;
-    case 'squeeze-defense-choice': resolveSqueezeConcede(); return true;
+    case 'squeeze-defense-choice':
+      if(cpuWeightedDecision(cpuComputeSqueezeThrowHomeProbability(GS))){ resolveSqueezeThrowHome(); }
+      else { resolveSqueezeConcede(); }
+      return true;
     case 'squeeze-miss-result': { const cb=GS.contestResult.onAdvance; GS.contestResult=null; (cb||afterPlateAppearance)(); return true; }
     case 'squeeze-result': GS.contestResult=null; afterPlateAppearance(); return true;
     default: return false; // animation-only stages resolve synchronously inside startDieRoll during sim, so shouldn't land here
@@ -12202,7 +12712,7 @@ function renderHitRunFBSend3rdChoice(m){
     row.appendChild(yesBtn); row.appendChild(noBtn);
     dz.appendChild(row);
   } else {
-    autoAdvanceOrWait(dz, tk, ()=>proceed(false), 'Waiting for the offense to decide\u2026');
+    autoAdvanceOrWait(dz, tk, ()=>{ if(GS && GS.stage==='hitrun-fb-send3rd-choice'){ proceed(cpuWeightedDecision(cpuComputeSendThirdOnHitRunFBProbability(GS))); } }, 'Waiting for the offense to decide\u2026');
   }
 }
 function beginHitRunFBThrow(){
@@ -12635,7 +13145,7 @@ function renderSteal13DefenseChoice(m){
     row.appendChild(throwBtn); row.appendChild(concedeBtn);
     dz.appendChild(row);
   } else {
-    autoAdvanceOrWait(dz, fk, throwDown, 'Waiting for the defense to decide\u2026');
+    autoAdvanceOrWait(dz, fk, ()=>{ if(GS && GS.stage==='steal13-defense-choice'){ cpuWeightedDecision(cpuComputeThrowDownSteal13Probability(GS)) ? throwDown() : letHimTake(); } }, 'Waiting for the defense to decide\u2026');
   }
 }
 // Step 2 (only reached if the defense chose to throw down): the offense decides whether to ALSO send
@@ -12660,7 +13170,7 @@ function renderSteal13SendHomeChoice(m){
     row.appendChild(sendBtn); row.appendChild(justBtn);
     dz.appendChild(row);
   } else {
-    autoAdvanceOrWait(dz, tk, ()=>proceed(false), 'Waiting for the offense to decide\u2026');
+    autoAdvanceOrWait(dz, tk, ()=>{ if(GS && GS.stage==='steal13-send-home-choice'){ proceed(cpuWeightedDecision(cpuComputeSendThirdOnSteal13Probability(GS))); } }, 'Waiting for the offense to decide\u2026');
   }
 }
 // Step 3: the actual steal-of-2nd roll, identical matchup to a plain steal — but if the offense chose
@@ -12824,7 +13334,7 @@ function renderDoubleSteal12DefenseChoice(m){
     row.appendChild(b2); row.appendChild(b3);
     dz.appendChild(row);
   } else {
-    autoAdvanceOrWait(dz, fk, ()=>throwTo(3), 'Waiting for the defense to decide where to throw\u2026'); // sim default: always go for the lead runner
+    autoAdvanceOrWait(dz, fk, ()=>{ if(GS && GS.stage==='doublesteal12-defense-choice'){ throwTo(cpuComputeDoubleStealTarget(GS)); } }, 'Waiting for the defense to decide where to throw\u2026');
   }
 }
 function initiateDoubleSteal12(target){
@@ -12885,7 +13395,7 @@ function renderDPChoice(m){
     row.appendChild(dpBtn);
     dz.appendChild(row);
   } else {
-    autoAdvanceOrWait(dz, fk, ()=>{ if(GS && GS.stage==='dp-choice'){ initiateDP(); } }, 'Waiting for the defense to decide how to play it\u2026');
+    autoAdvanceOrWait(dz, fk, ()=>{ if(GS && GS.stage==='dp-choice'){ cpuWeightedDecision(cpuComputeGoForDPProbability(GS)) ? (GS.stage='dp-preroll', render()) : (isForce3Branch ? initiateForceAt3rd() : resolveForceOutOnly()); } }, 'Waiting for the defense to decide how to play it\u2026');
   }
 }
 // Shown only after committing to "Attempt Double Play" above — the real matchup, with a genuine
@@ -13259,13 +13769,17 @@ function initiateInfieldInGB(sent){
   const batterName = res.batter.name;
   const pitcherName = currentPitcher(GS).name;
   const holdoverRunner = GS.bases[0] || GS.bases[1] || null; // whichever of 1st/2nd is occupied (never both here)
+  const holdoverFromSecond = !GS.bases[0] && !!GS.bases[1]; // specifically came from 2nd, not 1st
   const runnerName = GS.bases[2];
   GS.pendingClass = null;
 
   if(!sent){
     GS.outs += 1;
     GS.pitcherOuts[fk] += 1; creditPitch(GS, fk, pitcherName, 'outs');
-    GS.bases = [null, holdoverRunner, runnerName]; // batter out, 1st's runner forced to 2nd (or 2nd's runner just stays), 3rd holds
+    // Nobody but the batter is actually out here, and 3rd never gets vacated (the runner there holds,
+    // no throw was even attempted) — so the holdover runner has no opening to advance into regardless
+    // of which base he started from. He just stays exactly where he was.
+    GS.bases = [null, holdoverRunner, runnerName]; // batter out, holdover holds, 3rd holds
     creditBat(GS, tk, batterName, 'AB');
     const bannerText = `Groundout — ${runnerName} holds at third (Infield In).`;
     finishPA(GS, 0, bannerText);
@@ -13294,7 +13808,10 @@ function initiateInfieldInGB(sent){
       bannerText = `${runnerName} scores! ${batterName} safe at 1st (Infield In).`;
       bannerClass='hit';
     }
-    GS.bases = [batterName, holdoverRunner, null]; // batter always safe at 1st once sent, regardless of the throw
+    // The runner on 3rd is gone either way once sent — thrown out or scored, 3rd is vacant now. A
+    // holdover runner who started on 1st has no opening there and just stays put; one who started on
+    // 2nd specifically advances into the base that just opened up.
+    GS.bases = holdoverFromSecond ? [batterName, null, holdoverRunner] : [batterName, holdoverRunner, null];
     GS.runnerCredit[batterName] = pitcherName; // inherited-runner fix — see runnerCredit
     creditBat(GS, tk, batterName, 'AB');
     finishPA(GS, runsIn, bannerText);
@@ -13474,7 +13991,7 @@ function renderTagupDefensePick(m){
     });
     dz.appendChild(row);
   } else {
-    autoAdvanceOrWait(dz, fk, ()=>pickAndResolve(sentList.find(c=>c.toBase==='home') || sentList[0]), 'Waiting for the defense to decide which runner to throw at\u2026');
+    autoAdvanceOrWait(dz, fk, ()=>{ if(GS && GS.stage==='tagup-defense-pick'){ pickAndResolve(cpuPickTagUpThrowTarget(fk, tk, sentList)); } }, 'Waiting for the defense to decide which runner to throw at\u2026');
   }
 }
 // contested: the one runner actually thrown at. autoSafeOthers: every OTHER sent runner, all
@@ -13747,10 +14264,10 @@ function renderExtraBaseDefensePick(m){
     });
     dz.appendChild(row);
   } else {
-    // CPU heuristic (always protect the plate first when forced to pick one [SIMPLIFIED]) only
-    // applies to a genuine CPU opponent — an online opponent gets a real waiting message instead and
-    // makes this pick on their own device when their turn actually comes.
-    autoAdvanceOrWait(dz, fk, ()=>pickAndResolve(sentList.find(c=>c.toBase==='home') || sentList[0]), 'Waiting for the defense to decide which runner to throw at\u2026');
+    // Weighs each candidate's actual odds against how much that out is worth, same as the tag-up
+    // version — only applies to a genuine CPU opponent; an online opponent gets a real waiting message
+    // instead and makes this pick on their own device when their turn actually comes.
+    autoAdvanceOrWait(dz, fk, ()=>{ if(GS && GS.stage==='extrabase-defense-pick'){ pickAndResolve(cpuPickExtraBaseThrowTarget(fk, tk, sentList, GS.outs)); } }, 'Waiting for the defense to decide which runner to throw at\u2026');
   }
 }
 
@@ -13833,22 +14350,30 @@ function runBuntAttempt(){
     // advance one base, nobody can score from 3rd). A batting pitcher is excluded from the natural-20
     // bunt single specifically — even a 20 is just a normal successful sac bunt for him.
     if(roll===20 && !batterIsPitcher){ applyBuntSingle(roll); return; }
+    if(roll===1){ applyBuntRollOne(roll); return; }
+    if(roll===2){ applyBuntRollTwo(roll); return; }
     const success = roll>12; // tie(12) goes to Defense
     if(success){ applyBuntSuccess(roll); return; }
-    if(GS.buntAttempt===1){
-      GS.contestResult = { label:'Sac Bunt \u2014 Attempt 1', defLabel:'Needed', defValue:'>12', roll, defTotal:roll, offLabel:'Result', offValue:'Missed', bannerClass:'out', bannerText:'Bunt Missed', extraNote:'' };
-      logEntry(GS, `Bunt attempt 1 missed (roll ${roll}).`);
-      GS.stage='bunt-attempt1-missed';
-      render();
-    } else if(GS.buntAttempt===2){
-      GS.contestResult = { label:'Sac Bunt — Attempt 2', defLabel:'Needed', defValue:'>12', roll, defTotal:roll, offLabel:'Result', offValue:'Missed', bannerClass:'out', bannerText:'Bunt Missed Again', extraNote:'' };
-      logEntry(GS, `Bunt attempt 2 missed (roll ${roll}).`);
-      GS.stage='bunt-choice';
-      render();
-    } else {
-      applyBuntStrikeout(roll);
-    }
+    applyBuntMissed(roll);
   });
+}
+// The original 3-12 "missed, counts as a strike" outcome — pulled out as its own function so the
+// roll-1 fielder's-choice case can fall back to it on the rare base state where nobody's actually on
+// 1st or 2nd for the defense to retire (nothing left to do but treat it the same as any other miss).
+function applyBuntMissed(roll){
+  if(GS.buntAttempt===1){
+    GS.contestResult = { label:'Sac Bunt \u2014 Attempt 1', defLabel:'Needed', defValue:'>12', roll, defTotal:roll, offLabel:'Result', offValue:'Missed', bannerClass:'out', bannerText:'Bunt Missed', extraNote:'' };
+    logEntry(GS, `Bunt attempt 1 missed (roll ${roll}).`);
+    GS.stage='bunt-attempt1-missed';
+    render();
+  } else if(GS.buntAttempt===2){
+    GS.contestResult = { label:'Sac Bunt — Attempt 2', defLabel:'Needed', defValue:'>12', roll, defTotal:roll, offLabel:'Result', offValue:'Missed', bannerClass:'out', bannerText:'Bunt Missed Again', extraNote:'' };
+    logEntry(GS, `Bunt attempt 2 missed (roll ${roll}).`);
+    GS.stage='bunt-choice';
+    render();
+  } else {
+    applyBuntStrikeout(roll);
+  }
 }
 // House rule: a natural 20 on any bunt attempt beats it out for a single instead of a sacrifice —
 // no out, batter reaches 1st, and everyone on base advances exactly one base (same baseline advance
@@ -13877,6 +14402,65 @@ function applyBuntSingle(roll){
   finishPA(GS, runsIn, 'Bunt Single');
   logEntry(GS, `<b>${b.name}</b> beats it out for a bunt single (natural 20)!${scoreNote}`);
   GS.contestResult = { label:`Sac Bunt Attempt ${GS.buntAttempt} \u2014 Natural 20!`, defLabel:'Needed', defValue:'>12', roll, defTotal:roll, offLabel:'Result', offValue:'Bunt Single!', bannerClass:'hit', bannerText:'Bunt Single!'+scoreNote, extraNote:'House rule: a natural 20 beats it out for a hit \u2014 a runner on 3rd can score, unlike a sac bunt, with no defensive play possible on anyone.' };
+  GS.stage='bunt-result';
+  render();
+}
+// House rule: a roll of 1 on a bunt attempt is a fielder's choice — the defense makes a great play on
+// whichever runner is forced into the lead advancing spot, and he's out, while the batter is safe at
+// first (a genuine FC: AB charged, no hit, no out on the batter himself). Uses the exact same
+// base-advancement shape as a normal successful bunt (a runner already on 3rd still never factors in,
+// consistent with "nobody scores on a bunt" everywhere else in this engine) — the only difference is
+// the lead runner among whoever's actually forced doesn't make it, and the batter takes the base he
+// vacated instead of being out himself.
+function applyBuntRollOne(roll){
+  const b = currentBatter(GS);
+  const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
+  const pitcherName = currentPitcher(GS).name;
+  const bases = GS.bases.slice();
+  const r1 = bases[0], r2 = bases[1], r3 = bases[2];
+  let outRunner = null;
+  // A runner on 3rd never factors in (same "nobody scores on a bunt" convention as everywhere else) —
+  // this only ever concerns 1st and 2nd. With a runner on 1st, the batter taking 1st forces him toward
+  // 2nd; if 2nd is also occupied, that lead runner is who's actually retired here (despite rolling a 1
+  // being a defensive SUCCESS, not about a base happening to be blocked), and the 1st-base runner slides
+  // up to the 2nd-base spot he vacated. With nobody on 1st but a runner on 2nd, he's the one voluntarily
+  // attempting to move up (same shape as an ordinary successful sac) and gets caught instead.
+  const newBases = [null, null, r3];
+  if(r1){
+    if(r2){ outRunner = r2; newBases[1] = r1; }
+    else { outRunner = r1; }
+  } else if(r2){
+    outRunner = r2;
+  }
+  // Only actually an out (and only an FC, rather than a plain reach) if someone was identified to
+  // retire — a bunt attempt with nobody on 1st or 2nd (e.g. a runner on 3rd alone) has no one for this
+  // specific roll to catch, so it falls back to a conventional missed-bunt strike instead of inventing
+  // a phantom out. Bases must stay completely untouched in that case — don't commit newBases (with the
+  // batter already placed on 1st) until it's confirmed this is really an FC, not a miss.
+  if(!outRunner){ applyBuntMissed(roll); return; }
+  newBases[0] = b.name; // batter reaches on the fielder's choice
+  GS.bases = newBases;
+  GS.outs += 1;
+  GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, pitcherName, 'outs');
+  creditBat(GS, tk, b.name, 'AB'); // fielder's choice: an AB, no hit, no SAC (the runner didn't survive)
+  finishPA(GS, 0, 'FC');
+  const outNote = ` ${outRunner} is out on the play.`;
+  logEntry(GS, `<b>${b.name}</b> bunts into a fielder's choice \u2014 reaches first safely.${outNote}`);
+  GS.contestResult = { label:`Sac Bunt \u2014 Attempt ${GS.buntAttempt}`, defLabel:'Needed', defValue:'>12', roll, defTotal:roll, offLabel:'Result', offValue:'Fielder\u2019s Choice', bannerClass:'out', bannerText:'Fielder\u2019s Choice', extraNote:`House rule: a roll of 1 is a fielder's choice \u2014 the lead advancing runner is out, batter reaches first safely.${outNote}` };
+  GS.stage='bunt-result';
+  render();
+}
+// House rule: a roll of 2 is a foul pop-up caught in the air — batter's out (not a strikeout), and
+// since nobody actually advanced or was forced to, every runner just holds right where they were.
+function applyBuntRollTwo(roll){
+  const b = currentBatter(GS);
+  const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
+  const pitcherName = currentPitcher(GS).name;
+  GS.outs += 1; GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, pitcherName, 'outs');
+  creditBat(GS, tk, b.name, 'AB');
+  finishPA(GS, 0, '');
+  logEntry(GS, `<b>${b.name}</b> pops the bunt attempt foul \u2014 caught for the out. Runners hold.`);
+  GS.contestResult = { label:`Sac Bunt \u2014 Attempt ${GS.buntAttempt}`, defLabel:'Needed', defValue:'>12', roll, defTotal:roll, offLabel:'Result', offValue:'Foul Out', bannerClass:'out', bannerText:'Foul Pop-Up Out', extraNote:'House rule: a roll of 2 is a foul pop-up caught in the air \u2014 batter is out, runners do not advance.' };
   GS.stage='bunt-result';
   render();
 }
@@ -13932,13 +14516,21 @@ function applyBuntStrikeout(roll){
   render();
 }
 function renderBuntChoice(m){
+  const tk = battingTeamKey(GS);
   const dz = el('div','decision');
   dz.innerHTML = `<div class="lbl">Two Failed Bunt Attempts — Try a Third, or Take the Pitch?</div>`;
-  const row = el('div','btnrow');
-  const tryBtn = el('button','btn small secondary','Attempt 3rd Bunt'); tryBtn.onclick=()=>runBuntAttempt();
-  const pitchBtn = el('button','btn small','Take Normal Pitch (+2)'); pitchBtn.onclick=()=>{ GS.pitchBonus=2; GS.contestResult=null; doThrowPitch(); };
-  row.appendChild(tryBtn); row.appendChild(pitchBtn);
-  dz.appendChild(row);
+  const takePitch = ()=>{ GS.pitchBonus=2; GS.contestResult=null; doThrowPitch(); };
+  if(isHumanControls(tk)){
+    const row = el('div','btnrow');
+    const tryBtn = el('button','btn small secondary','Attempt 3rd Bunt'); tryBtn.onclick=()=>runBuntAttempt();
+    const pitchBtn = el('button','btn small','Take Normal Pitch (+2)'); pitchBtn.onclick=takePitch;
+    row.appendChild(tryBtn); row.appendChild(pitchBtn);
+    dz.appendChild(row);
+  } else {
+    // This stage had no CPU/offline fallback at all before — a non-human offense reaching it during
+    // live play would otherwise just sit here forever waiting for a click nobody can make.
+    autoAdvanceOrWait(dz, tk, ()=>{ if(GS && GS.stage==='bunt-choice'){ cpuWeightedDecision(cpuComputeTryThirdBuntProbability(GS)) ? runBuntAttempt() : takePitch(); } }, 'Waiting for the offense to decide\u2026');
+  }
   m.appendChild(dz);
 }
 
@@ -14061,6 +14653,49 @@ function resolveSqueezeConcede(){
   GS.stage = 'squeeze-result';
   render();
 }
+// The defense chose to go for the LEAD runner instead of the sure out at 1st — same house-rule
+// pattern as 3.12.B's "goes for the lead runner" throw: nobody ever threw to 1st, so the batter is
+// automatically safe there regardless of how this throw turns out. Pulled out as its own function so
+// both the human render path and the CPU decision path call the exact same resolution logic.
+function resolveSqueezeThrowHome(){
+  const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
+  const runnerName = GS.bases[2];
+  const bonus = GS.squeezeInfieldIn ? 0 : 5;
+  const defValue = infieldRating(fk);
+  const offValue = runnerSpeed(tk, runnerName) + bonus;
+  startDieRoll(20, 'squeeze-home-rolling', (dieRoll)=>{
+    const defTotal = defValue+dieRoll;
+    const success = offValue >= defTotal; // tie goes to the offense, matching every other throw here
+    const b = currentBatter(GS);
+    const bases = GS.bases.slice(); bases[2]=null;
+    let bannerText, bannerClass, logSuffix;
+    const pitcherName = currentPitcher(GS).name;
+    if(success){
+      addRuns(GS, tk, 1);
+      creditBat(GS, tk, runnerName, 'R');
+      creditRunsEarned(GS, fk, pitcherName, [runnerName]);
+      creditBat(GS, tk, b.name, 'SAC'); creditBat(GS, tk, b.name, 'RBI'); // squeeze succeeds: batter's bunt is a sacrifice
+      bannerText = `${runnerName} Scores!`; bannerClass = 'hit';
+      logSuffix = `${b.name} safe at 1st on the sacrifice.`;
+    } else {
+      GS.outs += 1; // the RUNNER is out at the plate, not the batter
+      GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, pitcherName, 'outs');
+      creditBat(GS, tk, b.name, 'AB'); // reaches on a fielder's choice: the sac attempt failed, a runner's out instead
+      bannerText = `${runnerName} Out at the Plate!`; bannerClass = 'out';
+      logSuffix = `${b.name} reaches 1st on the fielder's choice.`;
+    }
+    GS.bases = bases;
+    advanceOtherRunnersUncontested(); // pushes any existing 1st/2nd-base runner up first...
+    const finalBases = GS.bases.slice(); finalBases[0] = b.name; GS.bases = finalBases; // ...then the batter takes the now-open 1st
+    GS.runnerCredit[b.name] = pitcherName;
+    GS.lastResolved = { batter: b };
+    finishPA(GS, 0, '');
+    logEntry(GS, `${bannerText} ${logSuffix}`);
+    GS.contestResult = { label:'Squeeze \u2014 Throw Home', defLabel:'Infield Defense', defValue, roll:dieRoll, defTotal, offLabel:'Runner Speed', offValue, bannerClass, bannerText, extraNote:'' };
+    GS.stage = 'squeeze-result';
+    render();
+  });
+}
 function renderSqueezeDefenseChoice(m){
   const fk = fieldingTeamKey(GS), tk = battingTeamKey(GS);
   const runnerName = GS.bases[2];
@@ -14071,51 +14706,14 @@ function renderSqueezeDefenseChoice(m){
   dz.innerHTML = `<div class="lbl">Bunt Down \u2014 ${runnerName} Breaking for Home</div>
     <div class="rulesnote">If contested: Infield Defense <b>${defValue}</b> vs ${runnerName}'s Speed <b>${offValue}</b>${bonus?` (+${bonus})`:' (no bonus \u2014 infield was in)'}</div>`;
   m.appendChild(dz);
-  const throwHome = ()=>{
-    startDieRoll(20, 'squeeze-home-rolling', (dieRoll)=>{
-      const defTotal = defValue+dieRoll;
-      const success = offValue >= defTotal; // tie goes to the offense, matching every other throw here
-      const b = currentBatter(GS);
-      const bases = GS.bases.slice(); bases[2]=null;
-      let bannerText, bannerClass, logSuffix;
-      const pitcherName = currentPitcher(GS).name;
-      // The defense chose to go for the LEAD runner instead of the sure out at 1st — same house-rule
-      // pattern as 3.12.B's "goes for the lead runner" throw: nobody ever threw to 1st, so the batter
-      // is automatically safe there regardless of how this throw turns out.
-      if(success){
-        addRuns(GS, tk, 1);
-        creditBat(GS, tk, runnerName, 'R');
-        creditRunsEarned(GS, fk, pitcherName, [runnerName]);
-        creditBat(GS, tk, b.name, 'SAC'); creditBat(GS, tk, b.name, 'RBI'); // squeeze succeeds: batter's bunt is a sacrifice
-        bannerText = `${runnerName} Scores!`; bannerClass = 'hit';
-        logSuffix = `${b.name} safe at 1st on the sacrifice.`;
-      } else {
-        GS.outs += 1; // the RUNNER is out at the plate, not the batter
-        GS.pitcherOuts[fk]+=1; creditPitch(GS, fk, pitcherName, 'outs');
-        creditBat(GS, tk, b.name, 'AB'); // reaches on a fielder's choice: the sac attempt failed, a runner's out instead
-        bannerText = `${runnerName} Out at the Plate!`; bannerClass = 'out';
-        logSuffix = `${b.name} reaches 1st on the fielder's choice.`;
-      }
-      GS.bases = bases;
-      advanceOtherRunnersUncontested(); // pushes any existing 1st/2nd-base runner up first...
-      const finalBases = GS.bases.slice(); finalBases[0] = b.name; GS.bases = finalBases; // ...then the batter takes the now-open 1st
-      GS.runnerCredit[b.name] = pitcherName;
-      GS.lastResolved = { batter: b };
-      finishPA(GS, 0, '');
-      logEntry(GS, `${bannerText} ${logSuffix}`);
-      GS.contestResult = { label:'Squeeze \u2014 Throw Home', defLabel:'Infield Defense', defValue, roll:dieRoll, defTotal, offLabel:'Runner Speed', offValue, bannerClass, bannerText, extraNote:'' };
-      GS.stage = 'squeeze-result';
-      render();
-    });
-  };
   if(isHumanControls(fk)){
     const row = el('div','btnrow');
-    const throwBtn = el('button','btn small blueline','Throw Home'); throwBtn.onclick=throwHome;
+    const throwBtn = el('button','btn small blueline','Throw Home'); throwBtn.onclick=resolveSqueezeThrowHome;
     const concedeBtn = el('button','btn small secondary','Concede the Run'); concedeBtn.onclick=resolveSqueezeConcede;
     row.appendChild(throwBtn); row.appendChild(concedeBtn);
     dz.appendChild(row);
   } else {
-    autoAdvanceOrWait(dz, fk, resolveSqueezeConcede, 'Waiting for the defense to decide\u2026');
+    autoAdvanceOrWait(dz, fk, ()=>{ if(GS && GS.stage==='squeeze-defense-choice'){ cpuWeightedDecision(cpuComputeSqueezeThrowHomeProbability(GS)) ? resolveSqueezeThrowHome() : resolveSqueezeConcede(); } }, 'Waiting for the defense to decide\u2026');
   }
 }
 
@@ -14151,7 +14749,7 @@ function maybeAutoAdvance(){
   // like they were playing themselves.
   if(!isHumanControls(fk) && GS.stage==='defense-choice'){
     if(isOnlineOpponentTeam(fk)) return;
-    setTimeout(()=>{ if(GS && GS.stage==='defense-choice'){ GS.stage='offense-choice'; render(); } }, 300);
+    setTimeout(()=>{ if(GS && GS.stage==='defense-choice'){ cpuDecideDefenseChoice(GS); render(); } }, 300);
     return;
   }
   if(!isHumanControls(fk) && GS.stage==='offense-choice'){
@@ -14162,7 +14760,7 @@ function maybeAutoAdvance(){
     // fine when the timer belonged to whoever was deciding, but it's much too fast to hand someone
     // else the trigger while a real person is still looking at their own options.
     const delay = isHumanControls(tk) ? 2500 : 400;
-    setTimeout(()=>{ if(GS && GS.stage==='offense-choice'){ doThrowPitch(); } }, delay);
+    setTimeout(()=>{ if(GS && GS.stage==='offense-choice'){ cpuDecideOffenseChoice(GS); } }, delay);
     return;
   }
   if(!isHumanControls(tk) && GS.stage==='pitch-thrown'){
