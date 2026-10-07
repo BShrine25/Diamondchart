@@ -6047,7 +6047,15 @@ function autoAdvanceOrWait(container, teamKey, callback, waitLabel, delay){
   if(isOnlineOpponentTeam(teamKey)){
     container.appendChild(el('div','rulesnote', waitLabel || 'Waiting for the other player\u2026'));
   } else {
-    setTimeout(callback, delay||700);
+    setTimeout(()=>{
+      // Re-verify at execution time, not just scheduling time — render() re-invokes maybeAutoAdvance()
+      // on every single render, so by the time this timeout actually fires, the game may well have
+      // moved on to a different decision for a different team that happens to land on the same stage
+      // name this callback was written to check for. Without this, a stale CPU-scheduled timeout could
+      // fire against a human-controlled team's turn that coincidentally reached the same stage in the
+      // meantime — never act on a schedule that's gone stale.
+      if(!isHumanControls(teamKey)) callback();
+    }, delay||700);
   }
 }
 
@@ -12139,7 +12147,7 @@ function renderSwitchPositions(m){
 }
 
 function renderOffenseChoice(m, runnerOnBase, canSteal2, canSteal3, canDoubleSteal12, canSqueeze, canHitAndRun){
-  const tk=battingTeamKey(GS);
+  const tk=battingTeamKey(GS), fk=fieldingTeamKey(GS);
   const dz = el('div','decision');
   dz.innerHTML = `<div class="lbl">Offense: ${TEAMS[tk].nick}</div>`;
   const row = el('div','btnrow');
@@ -12168,22 +12176,36 @@ function renderOffenseChoice(m, runnerOnBase, canSteal2, canSteal3, canDoubleSte
   }
   if(canSqueeze){ const sq=el('button','btn small secondary','Squeeze'); sq.onclick=initiateSqueeze; row.appendChild(sq); }
   if(canHitAndRun){ const hr=el('button','btn small secondary','Hit and Run'); hr.onclick=initiateHitAndRun; row.appendChild(hr); }
-  // Online only: the offense gets an explicit "Continue" to signal they're done deciding, so the
-  // defense's Throw Pitch can't fire out from under them while they're still weighing a steal, bunt,
-  // or sub — a 30-second auto-continue keeps the game from stalling if someone steps away.
-  if(ONLINE_GAME){
-    if(!GS.offenseTimerArmed){
-      GS.offenseTimerArmed = true;
-      const myToken = GS.offenseTimerToken = (GS.offenseTimerToken||0)+1;
-      setTimeout(()=>{
-        if(GS && GS.stage==='offense-choice' && GS.offenseTimerToken===myToken && !GS.offenseReady){
-          GS.offenseReady = true;
-          render();
-        }
-      }, 30000);
+  // Whenever the defense isn't controlled on THIS device — a genuine CPU opponent, or the other real
+  // player in an online game — nobody on this device ever throws the pitch on its own: a human
+  // defense gets their own explicit "Throw Pitch" button (renderDefenseReadyToPitch), but neither a
+  // CPU defense nor a remote online defense has any such screen here, and nothing in maybeAutoAdvance
+  // covers this case either (its offense-choice branch only fires for a CPU offense). Without this, a
+  // human batting against either one, with no steal/bunt/pinch-hit options to use or simply not
+  // wanting to use any of them, would be stuck on this screen indefinitely — this is the deliberate,
+  // explicit "I'm ready, go ahead" moment that was missing. Online specifically can't just throw the
+  // pitch directly from here (the actual throw is the other player's own action on their own device)
+  // — it instead signals readiness via offenseReady, with a 30-second auto-continue safety net so the
+  // game can't stall forever if someone steps away. One single "Ready" button covers both cases, since
+  // either way it means the same thing to the player looking at it: nothing left to decide here.
+  if(!isHumanControls(fk)){
+    const readyBtn = el('button','btn small','Ready');
+    if(ONLINE_GAME){
+      if(!GS.offenseTimerArmed){
+        GS.offenseTimerArmed = true;
+        const myToken = GS.offenseTimerToken = (GS.offenseTimerToken||0)+1;
+        setTimeout(()=>{
+          if(GS && GS.stage==='offense-choice' && GS.offenseTimerToken===myToken && !GS.offenseReady){
+            GS.offenseReady = true;
+            render();
+          }
+        }, 30000);
+      }
+      readyBtn.onclick = ()=>{ GS.offenseReady=true; render(); };
+    } else {
+      readyBtn.onclick = doThrowPitch;
     }
-    const contBtn = el('button','btn','Continue'); contBtn.onclick=()=>{ GS.offenseReady=true; render(); };
-    row.appendChild(contBtn);
+    row.appendChild(readyBtn);
   }
   if(row.children.length===0){ dz.appendChild(el('div','rulesnote','No moves available \u2014 waiting for the pitch.')); }
   else { dz.appendChild(row); }
@@ -14752,15 +14774,15 @@ function maybeAutoAdvance(){
     setTimeout(()=>{ if(GS && GS.stage==='defense-choice'){ cpuDecideDefenseChoice(GS); render(); } }, 300);
     return;
   }
-  if(!isHumanControls(fk) && GS.stage==='offense-choice'){
-    if(isOnlineOpponentTeam(fk)) return;
-    // This used to belong to the batting side itself (a CPU batter deciding not to steal, safe to
-    // move on quickly). Now that throwing the pitch is the defense's action, a genuine human batter
-    // facing a CPU defense needs real time to actually consider a steal attempt first — 400ms was
-    // fine when the timer belonged to whoever was deciding, but it's much too fast to hand someone
-    // else the trigger while a real person is still looking at their own options.
-    const delay = isHumanControls(tk) ? 2500 : 400;
-    setTimeout(()=>{ if(GS && GS.stage==='offense-choice'){ cpuDecideOffenseChoice(GS); } }, delay);
+  if(!isHumanControls(tk) && GS.stage==='offense-choice'){
+    if(isOnlineOpponentTeam(tk)) return;
+    // This decision — stealing, bunting, hit-and-run — belongs to the OFFENSE (tk), not the defense
+    // (fk). A prior version of this check gated on fk instead, which meant a human batting against a
+    // CPU defense had the CPU deciding their own steal/bunt attempts for them, purely because the
+    // opposing defense happened to be non-human — the defense being CPU has nothing to do with whether
+    // the offense's own tactical choice here should be automated. Fixed to gate on the side that
+    // actually owns this decision.
+    setTimeout(()=>{ if(GS && GS.stage==='offense-choice'){ cpuDecideOffenseChoice(GS); } }, 400);
     return;
   }
   if(!isHumanControls(tk) && GS.stage==='pitch-thrown'){
