@@ -2304,7 +2304,14 @@ function bestDefensiveAlignment(startingNine){
   function ratingFor(player, pos){
     if(!eligibleFor(player, pos)) return null;
     const r = fieldingRatingFor(player, pos);
-    return r===null ? 0 : r;
+    if(r!==null) return r;
+    // No rated fielding data at this position at all — eligibleFor only allows this for a DH-only
+    // player as an emergency fallback, so it needs the same real penalty fielderBonus applies
+    // everywhere else for exactly this situation, not a neutral 0. Scoring it as 0 made the optimizer
+    // irrationally prefer parking an unrated player at an "emergency" spot over using a legitimately
+    // eligible fielder with a merely mediocre real rating, since 0 often beat a true but negative
+    // number — which is exactly backwards.
+    return pos==='1B' ? EMERGENCY_FIRST_BASE_PENALTY : OUT_OF_POSITION_PENALTY;
   }
   function bestAssignmentFor(players){
     const n = players.length;
@@ -8498,14 +8505,22 @@ function enforceCatcherRestDay(team, teamIdx){
   const catcherSlotIdx = team.lineup.findIndex(p=>p.pos==='C');
   if(catcherSlotIdx===-1) return;
   const catcher = team.lineup[catcherSlotIdx];
-  const streak = (SEASON.catcherStreak && SEASON.catcherStreak[teamIdx+':'+catcher.name]) || 0;
+  const streakKey = teamIdx+':'+catcher.name;
+  const streak = (SEASON.catcherStreak && SEASON.catcherStreak[streakKey]) || 0;
   if(streak<3) return; // fewer than 3 straight starts behind the plate -- not mandated yet
+  // The streak only otherwise resets when he actually starts and falls short of 6 innings — but the
+  // whole point of this rule is that he DOESN'T start on his rest day, so without resetting it here
+  // explicitly, a rested catcher's streak would just sit at 3 forever once hit, since he'd never get
+  // a qualifying (or non-qualifying) start to naturally clear it — making the rule fire every game
+  // from here on instead of just the one. Only reset where the rest actually gets enforced below, not
+  // in the fallback case where nobody else can catch and he plays through anyway.
 
   const dhSlotIdx = team.lineup.findIndex(p=>p.pos==='DH');
   if(dhSlotIdx!==-1 && eligibleFor(team.lineup[dhSlotIdx], 'C')){
     const dhPlayer = team.lineup[dhSlotIdx];
     team.lineup[catcherSlotIdx] = Object.assign({}, dhPlayer, {pos:'C'});
     team.lineup[dhSlotIdx] = Object.assign({}, catcher, {pos:'DH', restedToday:true});
+    SEASON.catcherStreak[streakKey] = 0;
     return;
   }
   // No DH swap available -- look for any other on-field or bench player who's catcher-eligible.
@@ -8524,9 +8539,11 @@ function enforceCatcherRestDay(team, teamIdx){
     } else {
       return; // no way to cover the vacated spot -- can't enforce the rest day today
     }
+    SEASON.catcherStreak[streakKey] = 0;
   } else if(benchIdx!==-1){
     team.lineup[catcherSlotIdx] = Object.assign({}, team.bench[benchIdx], {pos:'C'});
     team.bench.splice(benchIdx,1,Object.assign({}, catcher, {restedToday:true}));
+    SEASON.catcherStreak[streakKey] = 0;
   }
   // else: genuinely nobody else can catch -- leave him in, can't be enforced today.
 }
@@ -11311,12 +11328,25 @@ function renderRoster(){
   // on the bench unplaced.
   const awayUnplaced = TEAMS.away.bench.some(p=>p.mandatedToday);
   const homeUnplaced = TEAMS.home.bench.some(p=>p.mandatedToday);
+  // Same idea for a catcher's mandatory rest day: enforceCatcherRestDay already swapped him out before
+  // this screen ever rendered, but nothing stopped a manual lineup edit from swapping him straight back
+  // in afterward — his restedToday flag carries over through that swap (Object.assign keeps every
+  // property, not just position), so catch it here the same way a mandatory bench starter is caught.
+  const awayRestedCatcherBack = TEAMS.away.lineup.some(p=>p.pos==='C' && p.restedToday);
+  const homeRestedCatcherBack = TEAMS.home.lineup.some(p=>p.pos==='C' && p.restedToday);
+  const awayBlocked = awayUnplaced || awayRestedCatcherBack;
+  const homeBlocked = homeUnplaced || homeRestedCatcherBack;
+  const blockedNote = (unplaced, restedBack)=>{
+    if(unplaced && restedBack) return 'A mandatory bench starter still needs to be placed, and a rested catcher can\u2019t start today \u2014 fix both before continuing.';
+    if(restedBack) return 'This catcher is on his mandatory rest day and can\u2019t start \u2014 move him back off the catcher spot before continuing.';
+    return 'A mandatory bench starter still needs to be placed in the lineup before continuing.';
+  };
   if(ROSTER_STEP==='away'){
     const nextBtn = el('button','btn','Next: Home Lineup');
-    nextBtn.disabled = awayUnplaced;
+    nextBtn.disabled = awayBlocked;
     nextBtn.onclick = ()=>{ ROSTER_STEP='home'; render(); };
     bar.appendChild(nextBtn);
-    if(awayUnplaced) bar.appendChild(el('div','rulesnote','A mandatory bench starter still needs to be placed in the lineup before continuing.'));
+    if(awayBlocked) bar.appendChild(el('div','rulesnote', blockedNote(awayUnplaced, awayRestedCatcherBack)));
   } else if(ONLINE_GAME && ONLINE_GAME.myTeamKey!=='away'){
     // Same race as the starter-rank picker above: only the away side's device actually builds the
     // final TEAMS/GS and starts the game — this device just waits and receives the result normally
@@ -11324,7 +11354,7 @@ function renderRoster(){
     bar.appendChild(el('div','rulesnote','Waiting for the away side to start the game\u2026'));
   } else {
     const btn = el('button','btn','Play Ball');
-    btn.disabled = awayUnplaced || homeUnplaced;
+    btn.disabled = awayBlocked || homeBlocked;
     btn.onclick = ()=>{
       if(SEASON_GAME_IDX===null && PLAYOFF_MATCH_REF===null){
         TEAMS.away = cloneTeamForGame(TEAMS.away, STARTER_PICK);
@@ -11333,7 +11363,7 @@ function renderRoster(){
       GS=newGameState(MODE); SCREEN='game'; render();
     };
     bar.appendChild(btn);
-    if(awayUnplaced || homeUnplaced) bar.appendChild(el('div','rulesnote','A mandatory bench starter still needs to be placed in the lineup before you can play.'));
+    if(awayBlocked || homeBlocked) bar.appendChild(el('div','rulesnote', blockedNote(awayUnplaced || homeUnplaced, awayRestedCatcherBack || homeRestedCatcherBack)));
   }
   root.appendChild(bar);
 }
