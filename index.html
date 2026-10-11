@@ -2305,13 +2305,13 @@ function bestDefensiveAlignment(startingNine){
     if(!eligibleFor(player, pos)) return null;
     const r = fieldingRatingFor(player, pos);
     if(r!==null) return r;
-    // No rated fielding data at this position at all — eligibleFor only allows this for a DH-only
-    // player as an emergency fallback, so it needs the same real penalty fielderBonus applies
-    // everywhere else for exactly this situation, not a neutral 0. Scoring it as 0 made the optimizer
-    // irrationally prefer parking an unrated player at an "emergency" spot over using a legitimately
-    // eligible fielder with a merely mediocre real rating, since 0 often beat a true but negative
-    // number — which is exactly backwards.
-    return pos==='1B' ? EMERGENCY_FIRST_BASE_PENALTY : OUT_OF_POSITION_PENALTY;
+    // No rated fielding data at this position at all — eligibleFor now allows ANY player at any
+    // non-catcher position as an emergency fallback, so this needs the same real, family-aware
+    // penalty fielderBonus applies everywhere else for exactly this situation, not a neutral 0.
+    // Scoring it as 0 would make the optimizer irrationally prefer parking an unrated player at an
+    // "emergency" spot over using a legitimately eligible fielder with a merely mediocre real rating,
+    // since 0 often beats a true but negative number — which is exactly backwards.
+    return emergencyPenaltyFor(player, pos);
   }
   function bestAssignmentFor(players){
     const n = players.length;
@@ -3338,7 +3338,7 @@ function buildRosterFromPool(city, nick, defense, batterPool, pitcherPool, color
 }
 
 const PIT_BATTERS = [
-  cardBatter("Bryan Reynolds",["RF"],350,14,{SO:2,GB:2,FB:2,BB:6,'1B':5,'2B':2,HR:5},12,{LF:1,RF:1}),
+  cardBatter("Bryan Reynolds",["LF","RF"],350,14,{SO:2,GB:2,FB:2,BB:6,'1B':5,'2B':2,HR:5},12,{LF:1,RF:1}),
   cardBatter("Oneil Cruz",["CF","LF","RF"],380,21,{SO:3,GB:2,FB:1,BB:4,'1B':7,'2B':1,HR:1},11,{CF:1,LF:0,RF:0}),
   cardBatter("Ryan O'Hearn",["1B","LF","RF"],280,11,{SO:2,GB:2,FB:2,BB:3,'1B':7,'2B':2,HR:1},10,{'1B':1,LF:0,RF:0}),
   cardBatter("Billy Cook",["LF","CF","RF"],10,22,{SO:7,GB:3,FB:3,'1B':4,'2B':1,'3B':4,HR:1},8,{LF:1,CF:1,RF:1}),
@@ -3377,7 +3377,7 @@ const PIT_PITCHERS = [
 
 const CLE_BATTERS = [
   cardBatter("Jose Ramirez",["3B"],250,21,{SO:1,GB:1,FB:3,BB:6,'1B':6,'2B':2,HR:5},10,{'3B':3}),
-  cardBatter("Steven Kwan",["LF"],170,13,{SO:1,GB:2,FB:1,BB:6,'1B':9,'2B':2,'3B':1,HR:2},10,{LF:2,CF:2,RF:2}),
+  cardBatter("Steven Kwan",["LF","CF","RF"],170,13,{SO:1,GB:2,FB:1,BB:6,'1B':9,'2B':2,'3B':1,HR:2},10,{LF:2,CF:2,RF:2}),
   cardBatter("Kyle Manzardo",["1B"],40,8,{SO:3,GB:1,FB:3,BB:8,'1B':1,'2B':2,HR:6},9,{'1B':-1}),
   cardBatter("Patrick Bailey",["C"],10,9,{SO:2,GB:2,FB:2,BB:3,'1B':8,HR:7},7,{C:9}),
   cardBatter("Daniel Schneemann",["CF","2B","3B"],60,14,{SO:2,GB:2,FB:1,BB:4,'1B':8,'2B':2,HR:5},8,{CF:2,'2B':4,'3B':4}),
@@ -4891,11 +4891,10 @@ function runnerSpeed(teamKey, name){
 function fielderBonus(teamKey, pos){
   const p = TEAMS[teamKey].lineup.find(x=>x.pos===pos);
   if(!p) return 0;
-  // House rule: an emergency fielder is normally -5, but specifically at 1B it's only -2 — fielding
-  // 1B without being rated there is a much smaller ask than any other emergency assignment. Catcher
-  // never reaches this branch at all: eligibleFor() hard-blocks anyone not actually rated there from
-  // ever being placed at catcher in the first place, emergency or not.
-  if(!p.elig || !p.elig.includes(pos)) return pos==='1B' ? EMERGENCY_FIRST_BASE_PENALTY : OUT_OF_POSITION_PENALTY;
+  // House rule: an emergency fielder's penalty depends on the position family — see
+  // emergencyPenaltyFor. Catcher never reaches this branch at all: eligibleFor() hard-blocks anyone
+  // not actually rated there from ever being placed at catcher in the first place, emergency or not.
+  if(!p.elig || !p.elig.includes(pos)) return emergencyPenaltyFor(p, pos);
   if(p.fielding && p.fielding[pos]!==undefined) return p.fielding[pos];
   return 0;
 }
@@ -5185,13 +5184,30 @@ function applyOutcome(gs, res){
 // field assignment — they're not blocked — but it comes with a fielding penalty (see fielderBonus).
 const OUT_OF_POSITION_PENALTY = -5;
 const EMERGENCY_FIRST_BASE_PENALTY = -2; // house rule: 1B specifically is a smaller ask than any other emergency spot
+// House rule: any player can play any non-catcher position, always at SOME penalty when not actually
+// rated there — but how big a penalty depends on how much of an ask it really is. 1B is always the
+// smaller -2 for anyone not listed there. For the two position families below (middle/corner infield,
+// outfield), being listed at ANY position within the same family earns that same smaller -2 at the
+// others in it — the skills carry over reasonably well within a family. Having no eligibility
+// anywhere in that family at all is the harsher, true out-of-position -5.
+const INFIELD_MIDDLE_GROUP = ['2B','3B','SS'];
+const OUTFIELD_GROUP = ['LF','CF','RF'];
+function emergencyPenaltyFor(player, pos){
+  if(pos==='1B') return EMERGENCY_FIRST_BASE_PENALTY;
+  const group = INFIELD_MIDDLE_GROUP.includes(pos) ? INFIELD_MIDDLE_GROUP
+              : OUTFIELD_GROUP.includes(pos) ? OUTFIELD_GROUP
+              : null;
+  if(group && player.elig && group.some(p=>player.elig.includes(p))) return EMERGENCY_FIRST_BASE_PENALTY;
+  return OUT_OF_POSITION_PENALTY;
+}
 function eligibleFor(player, targetPos){
   if(targetPos==='DH') return true;
   // House rule: catcher is never an emergency position — a player not actually rated there can never
   // be placed at catcher, full stop, no penalty-based fallback the way every other position allows.
   if(targetPos==='C') return !!(player.elig && player.elig.includes('C'));
-  if(player.elig && player.elig.length) return player.elig.includes(targetPos);
-  return true; // DH-only player: allowed in an emergency, at a penalty
+  // House rule: every other position can be filled by anyone, listed there or not — eligibility is
+  // never the blocker outside of catcher; emergencyPenaltyFor is what actually prices the assignment.
+  return true;
 }
 // Fielding rating for one specific position off a player's {POS:rating} map, or
 // null if the player isn't fielding-rated there (e.g. DH, or an emergency
@@ -5488,7 +5504,9 @@ function cpuFindBestDefensiveSub(gs){
     if(p.pos==='DH') return; // no fielding position to upgrade
     const currentRating = fielderBonus(fk, p.pos);
     team.bench.forEach((b, benchIdx)=>{
-      if(!eligibleFor(b, p.pos)) return;
+      // Genuine listed eligibility only — eligibleFor() now allows anyone at any non-catcher spot as
+      // an emergency fallback, which is exactly what this function is explicitly NOT looking for here.
+      if(!(b.elig && b.elig.includes(p.pos))) return;
       const benchRating = (b.fielding && b.fielding[p.pos]!==undefined) ? b.fielding[p.pos] : 0;
       const gain = benchRating - currentRating;
       if(gain>=3 && (!best || gain>best.fieldingGain)){
@@ -8406,7 +8424,13 @@ function recordPitcherRestDebt(gs, awayIdx, homeIdx, dayOverride){
       // A starter currently stashed in the bullpen is tracked exactly like a true reliever while he's
       // there — his card's role tag doesn't matter, only where he's actually assigned today.
       if(!isCurrentlyBullpenArm(tk, pitcherObj)){
-        const restNeeded = isMLBSeason ? 3 : 4;
+        // MLB Season: rest required scales with the team's actual current rotation size — a 4-man
+        // rotation naturally cycles through 3 other starters before his turn comes back around, a
+        // 5-man rotation cycles through 4, and so on (rotation size minus one), regardless of how many
+        // innings or outs he actually threw that start. Draft Season keeps the flat rulebook 4.4 value
+        // as written. Reads the team's CURRENT rotation length, not a fixed assumption, since a
+        // mid-season move between rotation and bullpen can genuinely change it.
+        const restNeeded = isMLBSeason ? Math.max(1, TEAMS[tk].rotation.length-1) : 4;
         const newTiredUntil = gamesPlayedBefore + 1 + restNeeded;
         SEASON.pitcherRest[key] = Math.max(SEASON.pitcherRest[key]||0, newTiredUntil);
       } else if(isMLBSeason){
@@ -11117,7 +11141,7 @@ function renderLineupEditPicker(){
       const outOfPosition = slotPlayer.pos!=='DH' && !(player.elig && player.elig.includes(slotPlayer.pos));
       const targetRating = fieldingRatingFor(player, slotPlayer.pos);
       const fldNote = outOfPosition
-        ? ` · <span style="color:#B8860B;">emergency fielder, ${OUT_OF_POSITION_PENALTY} penalty</span>`
+        ? ` · <span style="color:#B8860B;">emergency fielder, ${emergencyPenaltyFor(player, slotPlayer.pos)} penalty</span>`
         : (targetRating!==null ? ` · ${slotPlayer.pos}+${targetRating}` : '');
       row.innerHTML = `<div class="pos">${slotPlayer.pos}</div><div class="nm">Replaces ${slotPlayer.name}</div><div class="sub2">OB ${player.onBase} · SPD ${player.speed}${fldNote}</div>`;
       row.onclick = ()=>{ swapLineupPosition(team, slotPlayer.pos, player.name); LINEUP_EDIT=null; render(); };
@@ -11135,7 +11159,7 @@ function renderLineupEditPicker(){
       const outOfPosition = pos!=='DH' && !(cand.elig && cand.elig.includes(pos));
       const targetRating = fieldingRatingFor(cand, pos);
       const fldNote = outOfPosition
-        ? ` · <span style="color:#B8860B;">emergency fielder, ${OUT_OF_POSITION_PENALTY} penalty</span>`
+        ? ` · <span style="color:#B8860B;">emergency fielder, ${emergencyPenaltyFor(cand, pos)} penalty</span>`
         : (targetRating!==null ? ` · ${pos}+${targetRating}` : '');
       row.innerHTML = `<div class="pos">${cand.pos}</div><div class="nm">${cand.name}</div><div class="sub2">OB ${cand.onBase} · SPD ${cand.speed} · ${fromLabel}${fldNote}</div>`;
       row.onclick = ()=>{ swapLineupPosition(team, pos, cand.name); LINEUP_EDIT=null; render(); };
@@ -12318,7 +12342,7 @@ function renderDefSubBenchPick(m){
     if(!eligibleFor(p, slot.pos)) return; // only eligible bench players are offered
     const outOfPosition = !(p.elig && p.elig.includes(slot.pos));
     const incomingFld = p.fielding && p.fielding[slot.pos];
-    const penalty = slot.pos==='1B' ? EMERGENCY_FIRST_BASE_PENALTY : OUT_OF_POSITION_PENALTY;
+    const penalty = emergencyPenaltyFor(p, slot.pos);
     const fldTag = incomingFld!=null ? `FLD ${incomingFld}` : '';
     const label = outOfPosition
       ? `${p.name} (${[fldTag, `${penalty} penalty`].filter(Boolean).join(', ')})`
@@ -12379,7 +12403,7 @@ function renderCatcherShiftBenchPick(m){
       if(!eligibleFor(p, vacatedPos)) return;
       const outOfPosition = !(p.elig && p.elig.includes(vacatedPos));
       const incomingFld = p.fielding && p.fielding[vacatedPos];
-      const penalty = vacatedPos==='1B' ? EMERGENCY_FIRST_BASE_PENALTY : OUT_OF_POSITION_PENALTY;
+      const penalty = emergencyPenaltyFor(p, vacatedPos);
       const fldTag = incomingFld!=null ? `FLD ${incomingFld}` : '';
       const label = outOfPosition
         ? `${p.name} (${[fldTag, `${penalty} penalty`].filter(Boolean).join(', ')})`
@@ -12482,7 +12506,7 @@ function renderEmergencyDefReplace(m){
   TEAMS[fk].bench.forEach((p,i)=>{
     if(!eligibleFor(p, slot.pos)) return;
     const outOfPosition = !(p.elig && p.elig.includes(slot.pos));
-    const btn = el('button','btn small secondary', outOfPosition ? `${p.name} (${OUT_OF_POSITION_PENALTY} penalty)` : p.name);
+    const btn = el('button','btn small secondary', outOfPosition ? `${p.name} (${emergencyPenaltyFor(p, slot.pos)} penalty)` : p.name);
     btn.onclick=()=>{
       const movingToPitch = TEAMS[fk].lineup[GS.subSlotIdx];
       performBatterSub(GS, fk, GS.subSlotIdx, i, 'moves to pitch');
@@ -12508,7 +12532,7 @@ function renderPinchHitBenchPick(m){
     // vacated position. If they stay in defensively afterward, the out-of-position penalty below
     // applies unless the manager rearranges the defense between innings (see Switch Positions).
     const outOfPosition = slot.pos!=='DH' && !(p.elig && p.elig.includes(slot.pos));
-    const btn = el('button','btn small secondary', outOfPosition ? `${p.name} (${OUT_OF_POSITION_PENALTY} penalty in field)` : p.name);
+    const btn = el('button','btn small secondary', outOfPosition ? `${p.name} (${emergencyPenaltyFor(p, slot.pos)} penalty in field)` : p.name);
     btn.onclick=()=>{
       SUB_PREVIEW = {
         player: p, team: TEAMS[tk], opts: {isPitcher:false},
