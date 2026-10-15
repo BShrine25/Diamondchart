@@ -5407,8 +5407,17 @@ function cpuComputePullProbability(gs, fk){
   // In-game fatigue (3.4): already incorporates season-level rest debt as a floor, so this alone
   // covers both "pitched deep today" and "didn't get enough rest between appearances" without
   // double-counting a separate season-tiredness bonus on top.
+  // Escalates by tired LEVEL, not just a flat per-out ramp — same tiering pitcherTiredExtraInnings
+  // uses for the actual Command penalty, so level 1 (-1 Command) lands right where it always has, and
+  // each level past that pushes the urgency up hard rather than drifting up gradually: a manager is
+  // far more anxious to make a move once his guy is two or three levels tired, not just barely
+  // extended past the limit. Tuned, with leverage folded in below for a normal close-and-late game, to
+  // land around a normal ~75% pull at -1 Command, ~90% at -2, and ~98% once he's -3 or deeper — a move
+  // that's close to automatic by that point, but still leaves a sliver of room for the two exceptions
+  // below (thin bullpen, or a lead lopsided enough that finishing it himself is worth the gamble).
   if(outsPastLimit >= 0){
-    p += 0.55 + Math.min(0.35, 0.12 * (outsPastLimit/3)); // climbs each inning further past the limit
+    const tiredLevel = Math.floor(outsPastLimit/3) + 1;
+    p += tiredLevel===1 ? 0.55 : tiredLevel===2 ? 0.70 : 0.78;
   }
 
   // Performance this specific outing — getting hit hard is its own reason to go to the pen even
@@ -5416,11 +5425,21 @@ function cpuComputePullProbability(gs, fk){
   const er = line.ER || 0;
   p += Math.min(0.25, er*0.05);
 
-  // Leverage: late and close raises urgency for a better matchup; a lopsided score lowers it either
-  // way (no reason to rush a change in a blowout, win or lose).
+  // Leverage: late and close raises urgency for a better matchup. A decisive score lowers it either
+  // way (no reason to rush a change in a blowout, win or lose) — graded rather than a hard cliff, and
+  // starting at a 6-run gap specifically so a 7-0 shutout-bid game already gets a real discount: still
+  // normally a pull once he's tired, but genuinely less certain than a normal close game, same as a
+  // real manager letting a guy try to finish what he's got going.
+  // That whole discount only makes sense while he's actually cruising, though — the case for "let him
+  // try to finish it" is specifically a no-hitter/shutout bid, and that's gone the moment he's put
+  // multiple men on base this inning, lopsided score or not. Scaled down by current baserunners rather
+  // than a hard cutoff, fully gone by 3 on: a runner or two still leaves some of the bid alive, but a
+  // real jam erases it.
   const scoreDiff = Math.abs(gs.score[fk] - gs.score[fk==='home'?'away':'home']);
+  const runnersOnNow = (gs.bases||[]).filter(Boolean).length;
+  const bidStillAlive = Math.max(0, 1 - runnersOnNow*0.4);
   if(gs.inning>=7 && scoreDiff<=3) p += 0.15;
-  else if(scoreDiff>=8) p -= 0.1;
+  else if(scoreDiff>=6) p -= Math.min(0.25, 0.05*(scoreDiff-5)) * bidStillAlive;
 
   // Bullpen conservation — only meaningful across a season/league, where today's relievers are also
   // needed tomorrow. A single game (or the postseason, where there genuinely is no tomorrow to save
@@ -5428,6 +5447,17 @@ function cpuComputePullProbability(gs, fk){
   const isSingleGameContext = !(typeof SEASON!=='undefined' && SEASON && SEASON.statsScope && PLAYOFF_MATCH_REF===null);
   if(!isSingleGameContext && outsPastLimit<0 && er===0 && !(gs.inning>=7 && scoreDiff<=3)){
     p *= 0.4; // no real reason yet — don't burn a reliever on a pitcher who's doing fine
+  }
+
+  // Thin bullpen — once he actually IS tired, a depleted pen is real reluctance to make the move, not
+  // just a reason to hold off early. If every reliever left is already gassed too (or there's simply
+  // nobody left), the tired starter and a tired reliever are a similar gamble, so there's at least a
+  // real chance he stays in and tries to work through it rather than handing the ball to someone just
+  // as cooked.
+  if(outsPastLimit>=0){
+    const availPitchers = TEAMS[fk].pitchers.filter((pp,i)=>i!==pIdx && !gs.pitcherRemoved[fk].has(i));
+    const restedAvail = availPitchers.filter(pp=>!isSeasonPitcherTired(fk, pp));
+    if(availPitchers.length>0 && restedAvail.length===0) p -= 0.2;
   }
   return p;
 }
