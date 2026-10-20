@@ -14654,9 +14654,9 @@ function runSqueezeAttempt(){
   GS.squeezeAttempt += 1;
   const attempt = GS.squeezeAttempt;
   startDieRoll(20, 'squeeze-rolling', (roll)=>{
-    if(roll<=3){ resolveSqueezeMiss(roll); return; }
+    if(roll<=2){ resolveSqueezeFoulDoubled(roll); return; }
+    if(roll<=5){ resolveSqueezeMiss(roll); return; }
     if(roll<=12){
-      if(GS.squeezeInfieldIn){ resolveSqueezeFoulInfieldIn(roll); return; }
       if(attempt<3){
         GS.contestResult = { label:`Squeeze \u2014 Attempt ${attempt}`, defLabel:'Roll', defValue:'', roll, defTotal:roll, offLabel:'Result', offValue:'Foul', bannerClass:'out', bannerText:'Foul Ball', extraNote:'' };
         logEntry(GS, `Squeeze attempt ${attempt}: foul ball (roll ${roll}).`);
@@ -14671,9 +14671,9 @@ function runSqueezeAttempt(){
   });
 }
 // Advances any OTHER baserunners (1st/2nd, if present) one base each, uncontested — used identically
-// on a successful squeeze and on a missed (1-3) squeeze, per the house rule ("as they would be
-// stealing with the runner on 3rd"). Never called on a foul, since a foul leaves everyone exactly
-// where they started.
+// on a successful squeeze and on a missed squeeze, per the house rule ("as they would be stealing
+// with the runner on 3rd"). Never called on a foul (doubled off or just a dead ball), since a foul
+// leaves everyone besides the runner at 3rd exactly where they started.
 function advanceOtherRunnersUncontested(){
   const bases = GS.bases.slice();
   if(bases[1] && !bases[2]){ bases[2]=bases[1]; bases[1]=null; }
@@ -14696,9 +14696,10 @@ function resolveSqueezeMiss(roll){
   GS.stage = 'squeeze-miss-result';
   render();
 }
-// Infield-in specific: a foul that would otherwise be totally harmless instead catches the runner
-// flat-footed, doubled off 3rd automatically — no roll, matching the house rule exactly.
-function resolveSqueezeFoulInfieldIn(roll){
+// Lowest end of the roll range: a foul that would otherwise be totally harmless instead catches the
+// runner flat-footed, doubled off 3rd automatically — no roll needed for the throw, no infield
+// positioning dependency, just the roll itself landing in this bottom band.
+function resolveSqueezeFoulDoubled(roll){
   const tk = battingTeamKey(GS), fk = fieldingTeamKey(GS);
   const runnerName = GS.bases[2];
   const bases = GS.bases.slice();
@@ -14706,8 +14707,8 @@ function resolveSqueezeFoulInfieldIn(roll){
   GS.bases = bases;
   GS.outs += 1;
   GS.pitcherOuts[fk] += 1; creditPitch(GS, fk, currentPitcher(GS).name, 'outs');
-  logEntry(GS, `Squeeze fouled off with the infield in (roll ${roll}) \u2014 <b>${runnerName}</b> doubled off 3rd.`);
-  GS.contestResult = { label:`Squeeze \u2014 Attempt ${GS.squeezeAttempt}`, defLabel:'Roll', defValue:'', roll, defTotal:roll, offLabel:'Result', offValue:'Foul', bannerClass:'out', bannerText:`${runnerName} Doubled Off 3rd`, extraNote:'Infield in: a foul ball here catches the runner instead of just being a dead ball.', onAdvance: doThrowPitch };
+  logEntry(GS, `Squeeze fouled off (roll ${roll}) \u2014 <b>${runnerName}</b> doubled off 3rd.`);
+  GS.contestResult = { label:`Squeeze \u2014 Attempt ${GS.squeezeAttempt}`, defLabel:'Roll', defValue:'', roll, defTotal:roll, offLabel:'Result', offValue:'Foul', bannerClass:'out', bannerText:`${runnerName} Doubled Off 3rd`, extraNote:'A foul ball here catches the runner instead of just being a dead ball.', onAdvance: doThrowPitch };
   GS.onBaseBonus = -2;
   GS.stage = 'squeeze-miss-result';
   render();
