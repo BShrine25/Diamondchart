@@ -4836,7 +4836,16 @@ function isSeasonPitcherTired(teamKey, pitcherObj){
   if(SEASON.statsScope==='mlb' && isCurrentlyBullpenArm(teamKey, pitcherObj)){
     const log = SEASON.pitcherDayLog && SEASON.pitcherDayLog[key];
     if(!log) return false;
-    const today = currentLeagueDay();
+    // "Today" is specifically the round of the game this pitcher is actually being considered for —
+    // not just the league's last known COMPLETED round. currentLeagueDay() only counts games already
+    // marked played, so for whichever team is first anywhere in the league to reach a given round,
+    // that round hasn't been marked played by anyone yet and doesn't register — even though it's the
+    // actual day this check is happening on. That silently undercounted elapsed rest by exactly one
+    // day for exactly that case. Falls back to the same currentLeagueDay()+1 approximation
+    // recordPitcherRestDebt already uses for an idle roster browse or a playoff game (no round field).
+    const today = (typeof SEASON_GAME_IDX!=='undefined' && SEASON_GAME_IDX!=null && SEASON.schedule[SEASON_GAME_IDX] && SEASON.schedule[SEASON_GAME_IDX].round!=null)
+      ? SEASON.schedule[SEASON_GAME_IDX].round
+      : currentLeagueDay()+1;
     const daysSince = today - log.day;
     const wasConsecutiveDay = log.prevDay===log.day-1;
     const combinedOuts = log.outs + (wasConsecutiveDay ? log.prevOuts : 0);
