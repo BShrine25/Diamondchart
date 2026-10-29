@@ -4621,6 +4621,12 @@ function newGameState(mode){
     // put on base. Set once, the moment a batter becomes a runner; read and cleared in
     // creditRunsEarned() the moment that runner scores. See creditRunsEarned for the crediting logic.
     runnerCredit:{},
+    // Extends the inherited-runner fix above to the box score's runLog (win/loss/save determination):
+    // the fielding-side pitcher actually credited/blamed for a run — via runnerCredit, same as R/ER —
+    // rather than whoever's literally on the mound right now. addRuns() and creditRunsEarned() run in
+    // different orders at different call sites, so this is set by whichever of the two runs first and
+    // consumed/fixed-up by whichever runs second; see both functions for the actual coordination.
+    pendingRunCredit:{},
     score:{away:0, home:0},
     inningRuns:{away:[], home:[]}, hits:{away:0, home:0}, errors:{away:0, home:0},
     batStats, pitStats, lineupHistory, subLetter:0,
@@ -4720,10 +4726,19 @@ function addRuns(gs, teamKey, runs){
   // changes, so the end-of-game determination (determineWinLossPitchers) can find exactly when the
   // winning team took the lead it never gave back, and who was on the mound for each side right then.
   if(!gs.runLog) gs.runLog = [];
+  // Inherited-runner fix: the fielding side's pitcher here is whoever's actually credited for this run
+  // (gs.pendingRunCredit, set by creditRunsEarned when it runs before addRuns at this call site — see
+  // creditRunsEarned), not necessarily whoever's literally on the mound right now. Falls back to the
+  // current pitcher when there's no pending credit (creditRunsEarned runs AFTER addRuns at some call
+  // sites instead, and fixes this entry up directly itself once it does; or no credit record exists at
+  // all, e.g. the ghost runner).
+  const fk = teamKey==='away' ? 'home' : 'away';
+  const creditedFieldingPitcher = gs.pendingRunCredit[fk] || TEAMS[fk].pitchers[gs.pitcherIdx[fk]].name;
+  delete gs.pendingRunCredit[fk];
   gs.runLog.push({
     awayScore: gs.score.away, homeScore: gs.score.home,
-    awayPitcher: TEAMS.away.pitchers[gs.pitcherIdx.away].name,
-    homePitcher: TEAMS.home.pitchers[gs.pitcherIdx.home].name,
+    awayPitcher: fk==='away' ? creditedFieldingPitcher : TEAMS.away.pitchers[gs.pitcherIdx.away].name,
+    homePitcher: fk==='home' ? creditedFieldingPitcher : TEAMS.home.pitchers[gs.pitcherIdx.home].name,
   });
 }
 
@@ -5942,6 +5957,7 @@ function checkHalfInningOver(gs){
     }
     gs.bases = extraInningGhostRunner(gs);
     gs.runnerCredit = {};
+    gs.pendingRunCredit = {};
     return true;
   }
   return false;
@@ -5976,13 +5992,29 @@ function creditRunsEarned(gs, fk, pitcherName, scorers){
   // relief pitcher who inherits runners is no longer charged with (or fatigued by) runs the previous
   // pitcher allowed. `pitcherName` is only a fallback, for a runner with no credit record (the
   // extra-innings ghost runner, who was placed rather than reaching off any pitcher's own pitching).
+  let lastCreditedPitcher = null;
   scorers.forEach(name=>{
     const creditedPitcher = gs.runnerCredit[name] || pitcherName;
+    lastCreditedPitcher = creditedPitcher;
     const isGhost = gs.ghostRunner && name===gs.ghostRunner;
     creditPitch(gs, fk, creditedPitcher, 'R', 1);
     if(!isGhost) creditPitch(gs, fk, creditedPitcher, 'ER', 1);
     delete gs.runnerCredit[name];
   });
+  // Same inherited-runner fix, extended to the box score's runLog (win/loss/save determination): the
+  // LAST scorer in this batch is whoever actually put the team ahead (or kept them there), so it's
+  // their credited pitcher that should be on record for this scoring event, not whoever's literally on
+  // the mound right now. addRuns() may have already logged this exact run (amend its entry directly),
+  // or may not have run yet for it (stash for addRuns to pick up when it does) — both orders happen at
+  // different call sites, so handle both.
+  if(gs.runLog && gs.runLog.length){
+    const last = gs.runLog[gs.runLog.length-1];
+    if(last.awayScore===gs.score.away && last.homeScore===gs.score.home){
+      if(fk==='away') last.awayPitcher = lastCreditedPitcher; else last.homePitcher = lastCreditedPitcher;
+      return;
+    }
+  }
+  gs.pendingRunCredit[fk] = lastCreditedPitcher;
 }
 function checkGameOver(gs){
   // End-of-top-half check: if the visiting team's turn at bat in the 9th (or
@@ -15178,9 +15210,20 @@ function pitchingTableHTML(teamKey){
   });
   if(currentPitcherName && !participantNames.includes(currentPitcherName)) participantNames.push(currentPitcherName);
   const rosterOrder = t.pitchers.map(p=>p.name);
+  // Actual in-game appearance order, not roster-array position — pitcherStints is pushed strictly
+  // chronologically as each pitching change happens, so its array order IS entry order. The starter
+  // never appears in it at all (stints only record SUBSTITUTIONS, never the pitcher who began the
+  // game), so anyone missing from this map is the starter and sorts first. This fixes bullpen usage
+  // that happens out of roster-array order (a later-listed reliever brought in before an earlier-listed
+  // one) showing up in the wrong spot in the box score.
+  const stints = (GS.pitcherStints && GS.pitcherStints[teamKey]) || [];
+  const entryOrder = {};
+  stints.forEach((s,i)=>{ if(!(s.name in entryOrder)) entryOrder[s.name] = i+1; });
   const orderedNames = participantNames.slice().sort((a,b)=>{
+    const ea = entryOrder[a], eb = entryOrder[b];
+    if(ea!=null || eb!=null) return (ea!=null?ea:0) - (eb!=null?eb:0);
     const ia = rosterOrder.indexOf(a), ib = rosterOrder.indexOf(b);
-    return (ia===-1?999:ia) - (ib===-1?999:ib); // anyone outside the normal staff sorts to the end
+    return (ia===-1?999:ia) - (ib===-1?999:ib); // fallback for the rare case neither has a stint record
   });
   const rows = orderedNames.map(name=>{
     const gameLine = GS.pitStats[teamKey][name] || initPitchLine();
