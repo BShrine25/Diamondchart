@@ -8590,6 +8590,24 @@ function enforceMandatoryBenchStarts(team, teamIdx){
 // else the bench), moving the rested catcher to DH if it's open, else benching him outright. He's not
 // blocked from ever catching again today — eligibleFor('C') still passes for him — so he can still be
 // brought in behind the plate from the 7th inning on if a real need arises.
+// Roster-screen gate for the catcher rest rule. enforceCatcherRestDay only ever looks at whoever is the
+// DEFAULT catcher when the roster screen is built, so a catcher already at the 3-start limit could simply
+// be hand-swapped in at catcher afterward and nothing noticed. This checks whoever is at catcher RIGHT NOW:
+// blocked if he's the one who was just rested (restedToday, whose streak was already reset), or if he's at
+// 3+ straight and there's actually somebody else who can catch instead. Never blocks when nobody else can
+// (or everybody else is also at the limit) — the rule can't be enforced then, and a lock with no way out
+// would just be a dead end.
+function catcherBlockedToday(teamKey){
+  const t = TEAMS[teamKey];
+  const c = t.lineup.find(p=>p.pos==='C');
+  if(!c) return false;
+  if(c.restedToday) return true;
+  if(SEASON_GAME_IDX===null || t.seasonIdx==null || typeof SEASON==='undefined' || !SEASON || !SEASON.catcherStreak) return false;
+  const streakOf = p => SEASON.catcherStreak[t.seasonIdx+':'+p.name] || 0;
+  if(streakOf(c) < 3) return false;
+  // Whoever was just rested can't catch today, so he doesn't count as someone else who can.
+  return t.lineup.concat(t.bench).some(p=>p.name!==c.name && eligibleFor(p,'C') && !p.restedToday && streakOf(p) < 3);
+}
 function enforceCatcherRestDay(team, teamIdx){
   if(!SEASON || teamIdx==null) return;
   const catcherSlotIdx = team.lineup.findIndex(p=>p.pos==='C');
@@ -8657,6 +8675,14 @@ function recordCatcherRestTracking(gs, awayIdx, homeIdx){
     const inningsPlayed = exitInning!==undefined ? exitInning : gs.inning;
     const qualifies = inningsPlayed>=6;
     SEASON.catcherStreak[key] = qualifies ? ((SEASON.catcherStreak[key]||0)+1) : 0;
+    // "3 straight" has to mean straight: every OTHER catcher on this team who didn't start behind the
+    // plate today has his streak broken, not just left frozen where it was. Without this a backup who
+    // catches every other day still piled up a count across non-consecutive starts and got forced to
+    // sit anyway. (The catcher rested by enforceCatcherRestDay is reset there too, which this now also
+    // covers for any other way a catcher ends up not starting — a manual swap, a benching, anything.)
+    Object.keys(SEASON.catcherStreak).forEach(k=>{
+      if(k!==key && k.startsWith(teamIdx+':')) SEASON.catcherStreak[k] = 0;
+    });
   });
 }
 // ---------------- LOCAL PERSISTENCE: career stats + active-season auto-save ----------------
@@ -11456,8 +11482,8 @@ function renderRoster(){
   // this screen ever rendered, but nothing stopped a manual lineup edit from swapping him straight back
   // in afterward — his restedToday flag carries over through that swap (Object.assign keeps every
   // property, not just position), so catch it here the same way a mandatory bench starter is caught.
-  const awayRestedCatcherBack = TEAMS.away.lineup.some(p=>p.pos==='C' && p.restedToday);
-  const homeRestedCatcherBack = TEAMS.home.lineup.some(p=>p.pos==='C' && p.restedToday);
+  const awayRestedCatcherBack = catcherBlockedToday('away');
+  const homeRestedCatcherBack = catcherBlockedToday('home');
   const awayBlocked = awayUnplaced || awayRestedCatcherBack;
   const homeBlocked = homeUnplaced || homeRestedCatcherBack;
   const blockedNote = (unplaced, restedBack)=>{
