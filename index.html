@@ -4621,12 +4621,14 @@ function newGameState(mode){
     // put on base. Set once, the moment a batter becomes a runner; read and cleared in
     // creditRunsEarned() the moment that runner scores. See creditRunsEarned for the crediting logic.
     runnerCredit:{},
-    // Extends the inherited-runner fix above to the box score's runLog (win/loss/save determination):
-    // the fielding-side pitcher actually credited/blamed for a run — via runnerCredit, same as R/ER —
-    // rather than whoever's literally on the mound right now. addRuns() and creditRunsEarned() run in
-    // different orders at different call sites, so this is set by whichever of the two runs first and
-    // consumed/fixed-up by whichever runs second; see both functions for the actual coordination.
-    pendingRunCredit:{},
+    // Extends the inherited-runner fix above to win/loss determination: every run scored against a
+    // team's staff, in the order it scored, with the pitcher actually credited for it (same runnerCredit
+    // lookup as R/ER). Deliberately a plain append-only list per fielding team rather than something
+    // patched into runLog as it happens — addRuns() and creditRunsEarned() fire in different orders at
+    // different call sites, so nothing here depends on which runs first. resolveRunLogCredits() lines
+    // this list up against runLog's cumulative scores once the game is over, to find who's responsible
+    // for the go-ahead run specifically.
+    runCreditLog:{away:[], home:[]},
     score:{away:0, home:0},
     inningRuns:{away:[], home:[]}, hits:{away:0, home:0}, errors:{away:0, home:0},
     batStats, pitStats, lineupHistory, subLetter:0,
@@ -4708,9 +4710,10 @@ function creditPitch(gs, teamKey, name, field, amount){
 // Any baserunner present in beforeBases but not in afterBases scored (within a single at-bat's
 // resolution, the only way a runner leaves the bases in these code paths is by crossing the plate).
 function scoredNamesFromDiff(beforeBases, afterBases){
-  const before = beforeBases.filter(Boolean);
   const after = afterBases.filter(Boolean);
-  return before.filter(n => !after.includes(n));
+  // In the order they actually score — a runner on 3rd crosses before one on 2nd, who crosses before
+  // one on 1st — since which run on a multi-run play is the go-ahead run decides who gets the loss.
+  return beforeBases.slice().reverse().filter(n => n && !after.includes(n));
 }
 
 // Central scoring helper — every run scored anywhere in the game must go through this
@@ -4726,19 +4729,10 @@ function addRuns(gs, teamKey, runs){
   // changes, so the end-of-game determination (determineWinLossPitchers) can find exactly when the
   // winning team took the lead it never gave back, and who was on the mound for each side right then.
   if(!gs.runLog) gs.runLog = [];
-  // Inherited-runner fix: the fielding side's pitcher here is whoever's actually credited for this run
-  // (gs.pendingRunCredit, set by creditRunsEarned when it runs before addRuns at this call site — see
-  // creditRunsEarned), not necessarily whoever's literally on the mound right now. Falls back to the
-  // current pitcher when there's no pending credit (creditRunsEarned runs AFTER addRuns at some call
-  // sites instead, and fixes this entry up directly itself once it does; or no credit record exists at
-  // all, e.g. the ghost runner).
-  const fk = teamKey==='away' ? 'home' : 'away';
-  const creditedFieldingPitcher = gs.pendingRunCredit[fk] || TEAMS[fk].pitchers[gs.pitcherIdx[fk]].name;
-  delete gs.pendingRunCredit[fk];
   gs.runLog.push({
     awayScore: gs.score.away, homeScore: gs.score.home,
-    awayPitcher: fk==='away' ? creditedFieldingPitcher : TEAMS.away.pitchers[gs.pitcherIdx.away].name,
-    homePitcher: fk==='home' ? creditedFieldingPitcher : TEAMS.home.pitchers[gs.pitcherIdx.home].name,
+    awayPitcher: TEAMS.away.pitchers[gs.pitcherIdx.away].name,
+    homePitcher: TEAMS.home.pitchers[gs.pitcherIdx.home].name,
   });
 }
 
@@ -5957,7 +5951,6 @@ function checkHalfInningOver(gs){
     }
     gs.bases = extraInningGhostRunner(gs);
     gs.runnerCredit = {};
-    gs.pendingRunCredit = {};
     return true;
   }
   return false;
@@ -5992,29 +5985,16 @@ function creditRunsEarned(gs, fk, pitcherName, scorers){
   // relief pitcher who inherits runners is no longer charged with (or fatigued by) runs the previous
   // pitcher allowed. `pitcherName` is only a fallback, for a runner with no credit record (the
   // extra-innings ghost runner, who was placed rather than reaching off any pitcher's own pitching).
-  let lastCreditedPitcher = null;
+  // `scorers` must be in the order they actually crossed the plate (lead runner first) — that order is
+  // what lets win/loss find the go-ahead run on a multi-run play. See runCreditLog.
   scorers.forEach(name=>{
     const creditedPitcher = gs.runnerCredit[name] || pitcherName;
-    lastCreditedPitcher = creditedPitcher;
     const isGhost = gs.ghostRunner && name===gs.ghostRunner;
     creditPitch(gs, fk, creditedPitcher, 'R', 1);
     if(!isGhost) creditPitch(gs, fk, creditedPitcher, 'ER', 1);
+    if(gs.runCreditLog) gs.runCreditLog[fk].push(creditedPitcher);
     delete gs.runnerCredit[name];
   });
-  // Same inherited-runner fix, extended to the box score's runLog (win/loss/save determination): the
-  // LAST scorer in this batch is whoever actually put the team ahead (or kept them there), so it's
-  // their credited pitcher that should be on record for this scoring event, not whoever's literally on
-  // the mound right now. addRuns() may have already logged this exact run (amend its entry directly),
-  // or may not have run yet for it (stash for addRuns to pick up when it does) — both orders happen at
-  // different call sites, so handle both.
-  if(gs.runLog && gs.runLog.length){
-    const last = gs.runLog[gs.runLog.length-1];
-    if(last.awayScore===gs.score.away && last.homeScore===gs.score.home){
-      if(fk==='away') last.awayPitcher = lastCreditedPitcher; else last.homePitcher = lastCreditedPitcher;
-      return;
-    }
-  }
-  gs.pendingRunCredit[fk] = lastCreditedPitcher;
 }
 function checkGameOver(gs){
   // End-of-top-half check: if the visiting team's turn at bat in the 9th (or
@@ -6303,7 +6283,7 @@ function appendBenchOrPitcherRestInfo(box, player, team){
       box.appendChild(el('div','rulesnote', `Last Pitched: ${gamesAgo} game${gamesAgo===1?'':'s'} ago`));
     }
   } else if(!isPitcherRole){
-    const isBenchPlayer = SEASON.teams && SEASON.teams[seasonIdx] && SEASON.teams[seasonIdx].bench.some(p=>p.name===player.name);
+    const isBenchPlayer = (SEASON.teams && SEASON.teams[seasonIdx] && SEASON.teams[seasonIdx].bench.some(p=>p.name===player.name)) || (team && team.bench && team.bench.some(p=>p.name===player.name));
     if(isBenchPlayer){
       const games = (SEASON.benchRest && SEASON.benchRest[key]) || 0;
       box.appendChild(el('div','rulesnote', `Bench Games: ${games}`));
@@ -6432,6 +6412,10 @@ function renderPlayerSeasonStatsSnippet(name){
 // picker (renderLineupEditPicker) and the pregame roster screen, so both show identical wording.
 // Only meaningful for an actual season game in progress (SEASON_GAME_IDX set) — an exhibition/draft-
 // mode game has no persistent bench-rest tracking to show.
+function benchStreakFor(t, player){
+  if(SEASON_GAME_IDX===null || t.seasonIdx==null || typeof SEASON==='undefined' || !SEASON || !SEASON.benchRest) return 0;
+  return SEASON.benchRest[t.seasonIdx+':'+player.name] || 0;
+}
 function getBenchStreakText(t, player){
   if(SEASON_GAME_IDX===null || t.seasonIdx==null || typeof SEASON==='undefined' || !SEASON || !SEASON.benchRest) return null;
   const streak = SEASON.benchRest[t.seasonIdx+':'+player.name] || 0;
@@ -8555,8 +8539,15 @@ function recordBenchMandatoryPlay(gs, awayIdx, homeIdx){
   if(!SEASON.benchRest) SEASON.benchRest = {};
   [['away',awayIdx],['home',homeIdx]].forEach(([tk, teamIdx])=>{
     if(teamIdx==null) return;
-    SEASON.teams[teamIdx].bench.forEach(benchPlayer=>{
-      const name = benchPlayer.name;
+    const roster = SEASON.teams[teamIdx];
+    // Everyone on the saved hitting roster — the saved LINEUP as well as the saved bench. Sitting a
+    // regular starter for one game from the pre-game roster screen only ever changes that day's copy of
+    // the team (swapLineupPosition), so he's still on the saved lineup, not the saved bench. Looping over
+    // the bench alone never counted him at all: he stayed at 0 no matter how many games he sat, which let
+    // the 3-game mandatory-start rule be dodged entirely just by sitting starters instead of bench guys.
+    const savedBenchNames = new Set(roster.bench.map(p=>p.name));
+    roster.bench.concat(roster.lineup).forEach(player=>{
+      const name = player.name;
       const key = teamIdx+':'+name;
       const started = gs.startingLineupNames[tk].includes(name);
       let qualifies = false;
@@ -8565,7 +8556,11 @@ function recordBenchMandatoryPlay(gs, awayIdx, homeIdx){
         const inningsPlayed = exitInning!==undefined ? exitInning : gs.inning; // never subbed out -> credit through the final inning
         qualifies = inningsPlayed>=6;
       }
-      SEASON.benchRest[key] = qualifies ? 0 : ((SEASON.benchRest[key]||0)+1);
+      const next = qualifies ? 0 : ((SEASON.benchRest[key]||0)+1);
+      // A bench player is always tracked, as before. A regular starter who simply started gets no entry
+      // at all rather than a zero for all nine of them on every team — only write one once there's a
+      // real count to hold (or an existing one to reset).
+      if(savedBenchNames.has(name) || next>0 || SEASON.benchRest[key]!==undefined) SEASON.benchRest[key] = next;
     });
   });
 }
@@ -9198,8 +9193,39 @@ function importSeasonFile(file){
 // was the pitcher of record at the decisive moment; if he falls short, the win passes to whichever
 // reliever threw the most innings for the winning team (MLB leaves this to scorer judgment — "most
 // innings" is the standard deterministic stand-in). No such innings minimum applies to a loss.
+// Inherited-runner fix for win/loss. runLog only records whoever is physically on the mound when the
+// score changes, but the loss belongs to whoever's charged with the winning team's GO-AHEAD run — the
+// (opponent's score + 1)th run it scored — and that can be a different pitcher than the one on the
+// mound (inherited runner), and on a multi-run play isn't necessarily the last run scored. runCreditLog
+// holds, per fielding team, the credited pitcher for every run scored against it in order, so the nth
+// run a team scored maps straight to runCreditLog[opponent][n-1]. Idempotent. If the list doesn't line
+// up with the final score (some scoring path never credited a run, or this is an older stored game with
+// no list at all) it leaves runLog alone and the physically-on-the-mound behavior stands, rather than
+// guessing and mis-crediting someone.
+function resolveRunLogCredits(gs){
+  if(!gs.runLog || !gs.runCreditLog) return;
+  if(gs.runCreditLog.away.length!==gs.score.home || gs.runCreditLog.home.length!==gs.score.away) return;
+  const scored = {away:0, home:0};
+  gs.runLog.forEach(entry=>{
+    ['away','home'].forEach(bat=>{
+      const now = bat==='away' ? entry.awayScore : entry.homeScore;
+      const prev = scored[bat];
+      if(now<=prev) return;
+      const fld = bat==='away' ? 'home' : 'away';
+      const fldScore = fld==='away' ? entry.awayScore : entry.homeScore;
+      // When this entry is where the batting team goes from level/behind to ahead, the go-ahead run is
+      // the one that does it, which isn't necessarily the last run of a multi-run play. Otherwise it
+      // makes no difference to win/loss, so the last run of the batch stands in.
+      const runNo = (prev<=fldScore && now>fldScore) ? fldScore+1 : now;
+      const credited = gs.runCreditLog[fld][runNo-1];
+      if(credited){ if(fld==='away') entry.awayPitcher = credited; else entry.homePitcher = credited; }
+      scored[bat] = now;
+    });
+  });
+}
 function determineWinLossPitchers(gs){
   if(!gs.gameOver || !gs.runLog || gs.runLog.length===0) return null;
+  resolveRunLogCredits(gs);
   const winnerKey = gs.winner, loserKey = winnerKey==='away' ? 'home' : 'away';
   let deciding = null;
   for(let i=0;i<gs.runLog.length;i++){
@@ -11046,7 +11072,10 @@ function swapLineupPosition(teamKey, pos, candidateName){
   if(benchIdx>=0){
     const candidate = t.bench[benchIdx];
     t.lineup[lineupIdx] = Object.assign({}, candidate, {pos});
-    t.bench[benchIdx] = Object.assign({}, currentPlayer);
+    // Sitting him today is a bench game for him like anyone else's — so if he's already gone 3 straight
+    // without a qualifying start, the same mandatory-start rule that protects a regular bench player
+    // applies to him too: he can't be benched again, and Play Ball stays locked until he's back in.
+    t.bench[benchIdx] = Object.assign({}, currentPlayer, {mandatedToday: benchStreakFor(t, currentPlayer)>=3});
   }
 }
 
@@ -15059,7 +15088,9 @@ function snapshotGSForBox(gs){
   // actually use before adding this list). Measured on a real played game, this and the log strip
   // together cut a single game's stored size by roughly a fifth, on top of a much bigger win from the
   // export function no longer pretty-printing the whole file.
+  resolveRunLogCredits(gs);
   return JSON.parse(JSON.stringify(Object.assign({}, gs, {
+    runCreditLog: {away:[], home:[]},
     pitcherRemoved: { away: Array.from(gs.pitcherRemoved.away), home: Array.from(gs.pitcherRemoved.home) },
     log: [], lastResolved: null, absChallengeAtBatBatter: null, runnerCredit: {},
     absChallengeUsed: {away:false, home:false}, absChallenges: {away:0, home:0}, stage: null,
